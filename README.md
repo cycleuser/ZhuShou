@@ -95,6 +95,7 @@ zhushou [options] [command]
 | `--model` | `-m` | Model name |
 | `--api-key` | | API key for cloud providers |
 | `--base-url` | | Custom API endpoint URL |
+| `--proxy` | | HTTP/HTTPS proxy URL (default: disabled) |
 
 ### Subcommands
 

@@ -225,6 +225,51 @@ class TestCLIFlags:
         assert r.returncode == 0
         assert "request" in r.stdout.lower()
 
+    def test_pipeline_output_flag_after_subcommand(self):
+        """zhushou pipeline 'x' -o ./out -m model must NOT fail with unrecognized arguments."""
+        r = self._run_cli("pipeline", "test request", "-o", "./test_out", "-m", "llama3", "--provider", "nonexistent")
+        # Should not be an argparse error; will fail at provider level but that's OK
+        assert "unrecognized arguments" not in r.stderr
+
+    def test_chat_model_flag_after_subcommand(self):
+        """zhushou chat 'x' -m model must NOT fail."""
+        r = self._run_cli("chat", "test", "-m", "llama3", "--provider", "nonexistent")
+        assert "unrecognized arguments" not in r.stderr
+
+    def test_models_json_flag_after_subcommand(self):
+        """zhushou models --json must work."""
+        r = self._run_cli("models", "--json")
+        assert r.returncode == 0
+        # Output should be valid JSON
+        import json as _json
+        data = _json.loads(r.stdout)
+        assert isinstance(data, list)
+
+    def test_models_provider_flag_after_subcommand(self):
+        """zhushou models --provider ollama must work."""
+        r = self._run_cli("models", "--provider", "ollama")
+        assert r.returncode == 0
+
+    def test_config_json_flag_after_subcommand(self):
+        """zhushou config --json must work."""
+        r = self._run_cli("config", "--json")
+        assert r.returncode == 0
+
+    def test_pipeline_help_has_output_flag(self):
+        r = self._run_cli("pipeline", "--help")
+        assert r.returncode == 0
+        assert "-o" in r.stdout or "--output" in r.stdout
+
+    def test_chat_help_has_provider_flag(self):
+        r = self._run_cli("chat", "--help")
+        assert r.returncode == 0
+        assert "--provider" in r.stdout
+
+    def test_models_help_has_proxy_flag(self):
+        r = self._run_cli("models", "--help")
+        assert r.returncode == 0
+        assert "--proxy" in r.stdout
+
 
 # ===========================================================================
 # __init__.py exports
@@ -791,3 +836,561 @@ class TestProxySupport:
         )
         assert r.returncode == 0
         assert "--proxy" in r.stdout
+
+
+# ===========================================================================
+# Documented CLI examples — argparse unit tests
+# ===========================================================================
+
+class TestDocumentedArgParsing:
+    """Test argparse parsing for every CLI example in README.md / README_CN.md.
+
+    Uses ``main(argv=...)`` with mocked command handlers so no LLM server
+    is needed and tests run in milliseconds.
+    """
+
+    def test_chat_message_parses(self):
+        """README: zhushou chat 'Explain Python decorators'"""
+        with patch("zhushou.cli._cmd_chat") as mock:
+            from zhushou.cli import main
+            main(["chat", "Explain Python decorators"])
+            mock.assert_called_once()
+            args = mock.call_args[0][0]
+            assert args.command == "chat"
+            assert args.message == "Explain Python decorators"
+
+    def test_chat_chinese_message_parses(self):
+        """README_CN: zhushou chat '解释 Python 装饰器'"""
+        with patch("zhushou.cli._cmd_chat") as mock:
+            from zhushou.cli import main
+            main(["chat", "解释 Python 装饰器"])
+            mock.assert_called_once()
+            args = mock.call_args[0][0]
+            assert args.message == "解释 Python 装饰器"
+
+    def test_pipeline_with_output_parses(self):
+        """README: zhushou pipeline 'Build a Gomoku game' -o ./output"""
+        with patch("zhushou.cli._cmd_pipeline") as mock:
+            from zhushou.cli import main
+            main(["pipeline", "Build a Gomoku game", "-o", "./output"])
+            mock.assert_called_once()
+            args = mock.call_args[0][0]
+            assert args.command == "pipeline"
+            assert args.request == "Build a Gomoku game"
+            assert args.output == "./output"
+
+    def test_pipeline_chinese_with_output_parses(self):
+        """README_CN: zhushou pipeline '开发一个五子棋游戏' -o ./output"""
+        with patch("zhushou.cli._cmd_pipeline") as mock:
+            from zhushou.cli import main
+            main(["pipeline", "开发一个五子棋游戏", "-o", "./output"])
+            mock.assert_called_once()
+            args = mock.call_args[0][0]
+            assert args.request == "开发一个五子棋游戏"
+            assert args.output == "./output"
+
+    def test_pipeline_flask_example(self):
+        """README: zhushou pipeline 'Build a REST API with Flask' -o ./my_api"""
+        with patch("zhushou.cli._cmd_pipeline") as mock:
+            from zhushou.cli import main
+            main(["pipeline", "Build a REST API with Flask", "-o", "./my_api"])
+            mock.assert_called_once()
+            args = mock.call_args[0][0]
+            assert args.request == "Build a REST API with Flask"
+            assert args.output == "./my_api"
+
+    def test_pipeline_flask_chinese_example(self):
+        """README_CN: zhushou pipeline '用 Flask 开发一个 REST API' -o ./my_api"""
+        with patch("zhushou.cli._cmd_pipeline") as mock:
+            from zhushou.cli import main
+            main(["pipeline", "用 Flask 开发一个 REST API", "-o", "./my_api"])
+            mock.assert_called_once()
+            args = mock.call_args[0][0]
+            assert args.request == "用 Flask 开发一个 REST API"
+            assert args.output == "./my_api"
+
+    def test_models_subcommand_parses(self):
+        """README: zhushou models"""
+        with patch("zhushou.cli._cmd_models") as mock:
+            from zhushou.cli import main
+            main(["models"])
+            mock.assert_called_once()
+            args = mock.call_args[0][0]
+            assert args.command == "models"
+
+    def test_config_subcommand_parses(self):
+        """README: zhushou config"""
+        with patch("zhushou.cli._cmd_config") as mock:
+            from zhushou.cli import main
+            main(["config"])
+            mock.assert_called_once()
+            args = mock.call_args[0][0]
+            assert args.command == "config"
+
+    def test_provider_ollama_model_llama3(self):
+        """README: zhushou --provider ollama --model llama3"""
+        with patch("zhushou.cli._cmd_interactive") as mock:
+            from zhushou.cli import main
+            main(["--provider", "ollama", "--model", "llama3"])
+            mock.assert_called_once()
+            args = mock.call_args[0][0]
+            assert args.provider == "ollama"
+            assert args.model == "llama3"
+
+    def test_provider_openai_with_key_and_model(self):
+        """README: zhushou --provider openai --api-key sk-... --model gpt-4o"""
+        with patch("zhushou.cli._cmd_interactive") as mock:
+            from zhushou.cli import main
+            main(["--provider", "openai", "--api-key", "sk-test", "--model", "gpt-4o"])
+            mock.assert_called_once()
+            args = mock.call_args[0][0]
+            assert args.provider == "openai"
+            assert args.api_key == "sk-test"
+            assert args.model == "gpt-4o"
+
+    def test_provider_deepseek_with_key(self):
+        """README: zhushou --provider deepseek --api-key sk-..."""
+        with patch("zhushou.cli._cmd_interactive") as mock:
+            from zhushou.cli import main
+            main(["--provider", "deepseek", "--api-key", "sk-test"])
+            mock.assert_called_once()
+            args = mock.call_args[0][0]
+            assert args.provider == "deepseek"
+            assert args.api_key == "sk-test"
+
+    def test_provider_custom_base_url(self):
+        """README: zhushou --provider openai --base-url http://localhost:8080/v1"""
+        with patch("zhushou.cli._cmd_interactive") as mock:
+            from zhushou.cli import main
+            main(["--provider", "openai", "--base-url", "http://localhost:8080/v1"])
+            mock.assert_called_once()
+            args = mock.call_args[0][0]
+            assert args.provider == "openai"
+            assert args.base_url == "http://localhost:8080/v1"
+
+    def test_no_subcommand_launches_interactive(self):
+        """README: zhushou (no args) -> interactive REPL"""
+        with patch("zhushou.cli._cmd_interactive") as mock:
+            from zhushou.cli import main
+            main([])
+            mock.assert_called_once()
+
+    def test_chat_no_message_launches_interactive(self):
+        """zhushou chat (no message) -> interactive mode"""
+        with patch("zhushou.cli._cmd_chat") as mock:
+            from zhushou.cli import main
+            main(["chat"])
+            mock.assert_called_once()
+            args = mock.call_args[0][0]
+            assert args.message == ""
+
+    def test_pipeline_flags_before_request(self):
+        """Flags before positional: zhushou pipeline -o ./out -m model 'request'"""
+        with patch("zhushou.cli._cmd_pipeline") as mock:
+            from zhushou.cli import main
+            main(["pipeline", "-o", "./out", "-m", "llama3", "my request"])
+            mock.assert_called_once()
+            args = mock.call_args[0][0]
+            assert args.output == "./out"
+            assert args.model == "llama3"
+            assert args.request == "my request"
+
+    def test_pipeline_flags_after_request(self):
+        """Flags after positional: zhushou pipeline 'request' -o ./out -m model"""
+        with patch("zhushou.cli._cmd_pipeline") as mock:
+            from zhushou.cli import main
+            main(["pipeline", "my request", "-o", "./out", "-m", "llama3"])
+            mock.assert_called_once()
+            args = mock.call_args[0][0]
+            assert args.output == "./out"
+            assert args.model == "llama3"
+            assert args.request == "my request"
+
+    def test_chat_with_all_flags(self):
+        """All flags on chat subcommand."""
+        with patch("zhushou.cli._cmd_chat") as mock:
+            from zhushou.cli import main
+            main([
+                "chat", "test message",
+                "-v", "--json", "-q",
+                "-o", "/tmp/test",
+                "--provider", "openai",
+                "-m", "gpt-4o",
+                "--api-key", "sk-test",
+                "--base-url", "http://localhost:8080/v1",
+                "--proxy", "http://proxy:8080",
+            ])
+            mock.assert_called_once()
+            args = mock.call_args[0][0]
+            assert args.verbose is True
+            assert args.json_output is True
+            assert args.quiet is True
+            assert args.output == "/tmp/test"
+            assert args.provider == "openai"
+            assert args.model == "gpt-4o"
+            assert args.api_key == "sk-test"
+            assert args.base_url == "http://localhost:8080/v1"
+            assert args.proxy == "http://proxy:8080"
+
+    def test_pipeline_with_all_flags(self):
+        """All flags on pipeline subcommand."""
+        with patch("zhushou.cli._cmd_pipeline") as mock:
+            from zhushou.cli import main
+            main([
+                "pipeline", "build something",
+                "-v", "--json", "-q",
+                "-o", "/tmp/out",
+                "--provider", "deepseek",
+                "-m", "deepseek-chat",
+                "--api-key", "sk-test",
+                "--base-url", "https://api.deepseek.com",
+                "--proxy", "http://proxy:8080",
+            ])
+            mock.assert_called_once()
+            args = mock.call_args[0][0]
+            assert args.verbose is True
+            assert args.json_output is True
+            assert args.quiet is True
+            assert args.output == "/tmp/out"
+            assert args.provider == "deepseek"
+            assert args.model == "deepseek-chat"
+
+    def test_models_with_json_flag(self):
+        """zhushou models --json"""
+        with patch("zhushou.cli._cmd_models") as mock:
+            from zhushou.cli import main
+            main(["models", "--json"])
+            mock.assert_called_once()
+            args = mock.call_args[0][0]
+            assert args.json_output is True
+
+    def test_models_with_provider_flag(self):
+        """zhushou models --provider openai"""
+        with patch("zhushou.cli._cmd_models") as mock:
+            from zhushou.cli import main
+            main(["models", "--provider", "openai"])
+            mock.assert_called_once()
+            args = mock.call_args[0][0]
+            assert args.provider == "openai"
+
+    def test_config_with_json_flag(self):
+        """zhushou config --json"""
+        with patch("zhushou.cli._cmd_config") as mock:
+            from zhushou.cli import main
+            main(["config", "--json"])
+            mock.assert_called_once()
+            args = mock.call_args[0][0]
+            assert args.json_output is True
+
+    def test_proxy_flag_on_all_subcommands(self):
+        """--proxy flag is accepted on every subcommand."""
+        for cmd, handler, extra_args in [
+            ("chat", "_cmd_chat", ["test"]),
+            ("pipeline", "_cmd_pipeline", ["request"]),
+            ("models", "_cmd_models", []),
+            ("config", "_cmd_config", []),
+        ]:
+            with patch(f"zhushou.cli.{handler}") as mock:
+                from zhushou.cli import main
+                main([cmd] + extra_args + ["--proxy", "http://proxy:8080"])
+                args = mock.call_args[0][0]
+                assert args.proxy == "http://proxy:8080", f"--proxy failed on {cmd}"
+
+
+# ===========================================================================
+# Documented CLI examples — subprocess integration tests
+# ===========================================================================
+
+class TestDocumentedCLIIntegration:
+    """Subprocess-based tests for CLI examples that can run without an LLM."""
+
+    def _run_cli(self, *args):
+        return subprocess.run(
+            [sys.executable, "-m", "zhushou"] + list(args),
+            capture_output=True, text=True, timeout=15,
+        )
+
+    def test_version_short(self):
+        """README: zhushou -V"""
+        r = self._run_cli("-V")
+        assert r.returncode == 0
+        assert "0.1.0" in r.stdout
+
+    def test_version_long(self):
+        """README: zhushou --version"""
+        r = self._run_cli("--version")
+        assert r.returncode == 0
+        assert "0.1.0" in r.stdout
+
+    def test_config_shows_directory(self):
+        """README: zhushou config"""
+        r = self._run_cli("config")
+        assert r.returncode == 0
+        assert "Config directory:" in r.stdout
+        assert ".zhushou" in r.stdout
+
+    def test_config_json_returns_valid_json(self):
+        """README: zhushou config --json"""
+        r = self._run_cli("config", "--json")
+        assert r.returncode == 0
+        data = json.loads(r.stdout)
+        assert isinstance(data, dict)
+
+    def test_models_json_returns_valid_json(self):
+        """README: zhushou models --json"""
+        r = self._run_cli("models", "--json")
+        assert r.returncode == 0
+        data = json.loads(r.stdout)
+        assert isinstance(data, list)
+
+    def test_models_default_provider(self):
+        """README: zhushou models"""
+        r = self._run_cli("models")
+        assert r.returncode == 0
+
+    def test_models_with_provider(self):
+        """README: zhushou models --provider ollama"""
+        r = self._run_cli("models", "--provider", "ollama")
+        assert r.returncode == 0
+
+    def test_chat_help(self):
+        """zhushou chat --help"""
+        r = self._run_cli("chat", "--help")
+        assert r.returncode == 0
+        assert "message" in r.stdout.lower()
+
+    def test_pipeline_help(self):
+        """zhushou pipeline --help"""
+        r = self._run_cli("pipeline", "--help")
+        assert r.returncode == 0
+        assert "request" in r.stdout.lower()
+
+    def test_models_help(self):
+        """zhushou models --help"""
+        r = self._run_cli("models", "--help")
+        assert r.returncode == 0
+
+    def test_config_help(self):
+        """zhushou config --help"""
+        r = self._run_cli("config", "--help")
+        assert r.returncode == 0
+
+
+# ===========================================================================
+# Documented Global Options — verify all documented flags exist
+# ===========================================================================
+
+class TestDocumentedGlobalOptions:
+    """Verify every flag listed in the README Global Options table exists
+    in the --help output of the main parser AND every subcommand."""
+
+    # Flags from the Global Options table in README.md (excluding -V which is main-only)
+    DOCUMENTED_FLAGS = [
+        "--verbose", "-v",
+        "--json",
+        "--quiet", "-q",
+        "--output", "-o",
+        "--provider",
+        "--model", "-m",
+        "--api-key",
+        "--base-url",
+        "--proxy",
+    ]
+
+    def _get_help(self, *args):
+        r = subprocess.run(
+            [sys.executable, "-m", "zhushou"] + list(args) + ["--help"],
+            capture_output=True, text=True, timeout=15,
+        )
+        assert r.returncode == 0
+        return r.stdout
+
+    def test_main_help_has_all_flags(self):
+        help_text = self._get_help()
+        for flag in self.DOCUMENTED_FLAGS:
+            assert flag in help_text, f"Missing {flag} in main help"
+        # -V is main-only
+        assert "-V" in help_text
+
+    def test_chat_help_has_all_flags(self):
+        help_text = self._get_help("chat")
+        for flag in self.DOCUMENTED_FLAGS:
+            assert flag in help_text, f"Missing {flag} in 'chat' help"
+
+    def test_pipeline_help_has_all_flags(self):
+        help_text = self._get_help("pipeline")
+        for flag in self.DOCUMENTED_FLAGS:
+            assert flag in help_text, f"Missing {flag} in 'pipeline' help"
+
+    def test_models_help_has_all_flags(self):
+        help_text = self._get_help("models")
+        for flag in self.DOCUMENTED_FLAGS:
+            assert flag in help_text, f"Missing {flag} in 'models' help"
+
+    def test_config_help_has_all_flags(self):
+        help_text = self._get_help("config")
+        for flag in self.DOCUMENTED_FLAGS:
+            assert flag in help_text, f"Missing {flag} in 'config' help"
+
+
+# ===========================================================================
+# Documented Subcommands — verify all exist
+# ===========================================================================
+
+class TestDocumentedSubcommands:
+    """Verify every subcommand listed in the README exists."""
+
+    DOCUMENTED_SUBCOMMANDS = ["chat", "pipeline", "models", "config"]
+
+    def test_all_subcommands_in_main_help(self):
+        r = subprocess.run(
+            [sys.executable, "-m", "zhushou", "--help"],
+            capture_output=True, text=True, timeout=15,
+        )
+        assert r.returncode == 0
+        for cmd in self.DOCUMENTED_SUBCOMMANDS:
+            assert cmd in r.stdout, f"Missing subcommand '{cmd}' in main help"
+
+    def test_each_subcommand_has_help(self):
+        for cmd in self.DOCUMENTED_SUBCOMMANDS:
+            r = subprocess.run(
+                [sys.executable, "-m", "zhushou", cmd, "--help"],
+                capture_output=True, text=True, timeout=15,
+            )
+            assert r.returncode == 0, f"'{cmd} --help' failed with rc={r.returncode}"
+
+
+# ===========================================================================
+# Documented Providers — verify all exist in factory
+# ===========================================================================
+
+class TestDocumentedProviders:
+    """Verify every provider listed in the README is available."""
+
+    DOCUMENTED_PROVIDERS = [
+        "ollama", "openai", "anthropic", "deepseek", "gemini", "lmstudio", "vllm",
+    ]
+
+    def test_all_providers_in_factory(self):
+        from zhushou.llm.factory import LLMClientFactory
+        available = LLMClientFactory.list_providers()
+        for p in self.DOCUMENTED_PROVIDERS:
+            assert p in available, f"Provider '{p}' documented but not in factory"
+
+    def test_claude_alias_exists(self):
+        from zhushou.llm.factory import LLMClientFactory
+        assert "claude" in LLMClientFactory.PROVIDERS
+
+    def test_factory_create_ollama(self):
+        from zhushou.llm.factory import LLMClientFactory
+        client = LLMClientFactory.create_client("ollama")
+        assert client.provider_name == "ollama"
+
+    def test_factory_create_openai(self):
+        from zhushou.llm.factory import LLMClientFactory
+        client = LLMClientFactory.create_client("openai", api_key="sk-test")
+        assert client.provider_name == "openai"
+
+    def test_factory_create_deepseek(self):
+        from zhushou.llm.factory import LLMClientFactory
+        client = LLMClientFactory.create_client("deepseek", api_key="sk-test")
+        assert client.provider_name == "openai"  # deepseek uses OpenAI client
+
+    def test_factory_unknown_provider_raises(self):
+        from zhushou.llm.factory import LLMClientFactory
+        with pytest.raises(ValueError, match="Unknown LLM provider"):
+            LLMClientFactory.create_client("nonexistent_xyz")
+
+
+# ===========================================================================
+# Documented Python API — verify imports and function signatures
+# ===========================================================================
+
+class TestDocumentedPythonAPI:
+    """Verify all Python API examples from the README work correctly."""
+
+    def test_top_level_imports(self):
+        """README: from zhushou import chat, run_pipeline, search_pypi"""
+        from zhushou import chat, run_pipeline, search_pypi
+        assert callable(chat)
+        assert callable(run_pipeline)
+        assert callable(search_pypi)
+
+    def test_tools_imports(self):
+        """README: from zhushou.tools import TOOLS, dispatch"""
+        from zhushou.tools import TOOLS, dispatch
+        assert isinstance(TOOLS, list)
+        assert callable(dispatch)
+
+    def test_chat_accepts_documented_params(self):
+        """README: chat('msg', provider='ollama', model='llama3')"""
+        import inspect
+        from zhushou.api import chat
+        sig = inspect.signature(chat)
+        params = list(sig.parameters.keys())
+        assert "message" in params
+        assert "provider" in params
+        assert "model" in params
+
+    def test_run_pipeline_accepts_documented_params(self):
+        """README: run_pipeline('request', output_dir='./calc')"""
+        import inspect
+        from zhushou.api import run_pipeline
+        sig = inspect.signature(run_pipeline)
+        params = list(sig.parameters.keys())
+        assert "request" in params
+        assert "output_dir" in params
+
+    def test_search_pypi_accepts_documented_params(self):
+        """README: search_pypi('requests')"""
+        import inspect
+        from zhushou.api import search_pypi
+        sig = inspect.signature(search_pypi)
+        params = list(sig.parameters.keys())
+        assert "query" in params
+
+    def test_toolresult_has_documented_fields(self):
+        """README: result.success, result.data"""
+        from zhushou.api import ToolResult
+        r = ToolResult(success=True, data="test")
+        assert hasattr(r, "success")
+        assert hasattr(r, "data")
+        assert hasattr(r, "error")
+
+    def test_chat_returns_toolresult(self):
+        """chat() always returns ToolResult even on failure."""
+        from zhushou.api import chat, ToolResult
+        result = chat("test", provider="nonexistent_xyz")
+        assert isinstance(result, ToolResult)
+        assert result.success is False
+
+    def test_run_pipeline_returns_toolresult(self):
+        """run_pipeline() always returns ToolResult even on failure."""
+        from zhushou.api import run_pipeline, ToolResult
+        result = run_pipeline("test", provider="nonexistent_xyz")
+        assert isinstance(result, ToolResult)
+        assert result.success is False
+
+    def test_search_pypi_returns_toolresult(self):
+        """search_pypi() always returns ToolResult."""
+        from zhushou.api import search_pypi, ToolResult
+        result = search_pypi("requests")
+        assert isinstance(result, ToolResult)
+
+    def test_tools_schema_matches_api(self):
+        """TOOLS schema tool names map to real dispatch targets."""
+        from zhushou.tools import TOOLS, dispatch
+        for tool in TOOLS:
+            name = tool["function"]["name"]
+            # dispatch should not raise ValueError for known tools
+            # (it will fail at API level but not at routing level)
+            if name == "zhushou_search_pypi":
+                result = dispatch(name, {"query": "test"})
+                assert isinstance(result, dict)
+
+    def test_proxy_param_in_api_functions(self):
+        """Proxy parameter exists in chat() and run_pipeline()."""
+        import inspect
+        from zhushou.api import chat, run_pipeline
+        assert "proxy" in inspect.signature(chat).parameters
+        assert "proxy" in inspect.signature(run_pipeline).parameters

@@ -95,6 +95,7 @@ zhushou [选项] [命令]
 | `--model` | `-m` | 模型名称 |
 | `--api-key` | | 云服务 API 密钥 |
 | `--base-url` | | 自定义 API 端点 URL |
+| `--proxy` | | HTTP/HTTPS 代理 URL（默认：禁用） |
 
 ### 子命令
 

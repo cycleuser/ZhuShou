@@ -1,5 +1,6 @@
-usage: zhushou [-h] [-V] [-v] [--json] [-q] [-o OUTPUT] [--provider PROVIDER]
+usage: zhushou [-h] [-v] [--json] [-q] [-o OUTPUT] [--provider PROVIDER]
                [--model MODEL] [--api-key API_KEY] [--base-url BASE_URL]
+               [--proxy PROXY] [-V]
                {chat,pipeline,models,config} ...
 
 ZhuShou (助手) - AI-powered development assistant
@@ -13,7 +14,6 @@ positional arguments:
 
 options:
   -h, --help            show this help message and exit
-  -V, --version         show program's version number and exit
   -v, --verbose         Verbose output
   --json                Output results as JSON
   -q, --quiet           Suppress non-essential output
@@ -25,10 +25,14 @@ options:
                         Model name (default: provider default)
   --api-key API_KEY     API key for cloud providers
   --base-url BASE_URL   Custom API endpoint URL
+  --proxy PROXY         HTTP/HTTPS proxy URL (default: disabled, ignores
+                        system proxy env vars)
+  -V, --version         show program's version number and exit
 
 examples:
-  zhushou                              Launch interactive REPL
-  zhushou chat "Explain decorators"    Single-turn chat
-  zhushou pipeline "Build Gomoku" -o . Run 7-stage coding pipeline
-  zhushou models                       List available models
-  zhushou config                       Show configuration
+  zhushou                                  Launch interactive REPL
+  zhushou chat "Explain decorators"        Single-turn chat
+  zhushou pipeline "Build Gomoku" -o .     Run 7-stage coding pipeline
+  zhushou models                           List available models
+  zhushou models --provider openai         List OpenAI models
+  zhushou config                           Show configuration

@@ -10,71 +10,81 @@ import sys
 from zhushou import __version__
 
 
+def _make_common_parser() -> argparse.ArgumentParser:
+    """Build a parent parser with flags shared across all subcommands."""
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument(
+        "-v", "--verbose",
+        action="store_true",
+        help="Verbose output",
+    )
+    common.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="Output results as JSON",
+    )
+    common.add_argument(
+        "-q", "--quiet",
+        action="store_true",
+        help="Suppress non-essential output",
+    )
+    common.add_argument(
+        "-o", "--output",
+        default=None,
+        help="Working / output directory",
+    )
+    common.add_argument(
+        "--provider",
+        default="ollama",
+        help="LLM provider: ollama, openai, anthropic, deepseek, gemini (default: ollama)",
+    )
+    common.add_argument(
+        "--model", "-m",
+        default="",
+        help="Model name (default: provider default)",
+    )
+    common.add_argument(
+        "--api-key",
+        default="",
+        help="API key for cloud providers",
+    )
+    common.add_argument(
+        "--base-url",
+        default="",
+        help="Custom API endpoint URL",
+    )
+    common.add_argument(
+        "--proxy",
+        default="",
+        help="HTTP/HTTPS proxy URL (default: disabled, ignores system proxy env vars)",
+    )
+    return common
+
+
 def main(argv: list[str] | None = None) -> None:
     """Entry point for the zhushou CLI."""
+    common = _make_common_parser()
+
     parser = argparse.ArgumentParser(
         prog="zhushou",
         description="ZhuShou (助手) - AI-powered development assistant",
         formatter_class=argparse.RawDescriptionHelpFormatter,
+        parents=[common],
         epilog="""\
 examples:
-  zhushou                              Launch interactive REPL
-  zhushou chat "Explain decorators"    Single-turn chat
-  zhushou pipeline "Build Gomoku" -o . Run 7-stage coding pipeline
-  zhushou models                       List available models
-  zhushou config                       Show configuration
+  zhushou                                  Launch interactive REPL
+  zhushou chat "Explain decorators"        Single-turn chat
+  zhushou pipeline "Build Gomoku" -o .     Run 7-stage coding pipeline
+  zhushou models                           List available models
+  zhushou models --provider openai         List OpenAI models
+  zhushou config                           Show configuration
 """,
     )
     parser.add_argument(
         "-V", "--version",
         action="version",
         version=f"zhushou {__version__}",
-    )
-    parser.add_argument(
-        "-v", "--verbose",
-        action="store_true",
-        help="Verbose output",
-    )
-    parser.add_argument(
-        "--json",
-        action="store_true",
-        dest="json_output",
-        help="Output results as JSON",
-    )
-    parser.add_argument(
-        "-q", "--quiet",
-        action="store_true",
-        help="Suppress non-essential output",
-    )
-    parser.add_argument(
-        "-o", "--output",
-        default=None,
-        help="Working / output directory",
-    )
-    parser.add_argument(
-        "--provider",
-        default="ollama",
-        help="LLM provider: ollama, openai, anthropic, deepseek, gemini (default: ollama)",
-    )
-    parser.add_argument(
-        "--model", "-m",
-        default="",
-        help="Model name (default: provider default)",
-    )
-    parser.add_argument(
-        "--api-key",
-        default="",
-        help="API key for cloud providers",
-    )
-    parser.add_argument(
-        "--base-url",
-        default="",
-        help="Custom API endpoint URL",
-    )
-    parser.add_argument(
-        "--proxy",
-        default="",
-        help="HTTP/HTTPS proxy URL (default: disabled, ignores system proxy env vars)",
     )
 
     subparsers = parser.add_subparsers(dest="command")
@@ -83,6 +93,7 @@ examples:
     chat_parser = subparsers.add_parser(
         "chat",
         help="Send a message to the assistant",
+        parents=[common],
     )
     chat_parser.add_argument(
         "message",
@@ -95,6 +106,7 @@ examples:
     pipeline_parser = subparsers.add_parser(
         "pipeline",
         help="Run the 7-stage autonomous coding pipeline",
+        parents=[common],
     )
     pipeline_parser.add_argument(
         "request",
@@ -105,12 +117,14 @@ examples:
     subparsers.add_parser(
         "models",
         help="List available models across providers",
+        parents=[common],
     )
 
     # config subcommand
     subparsers.add_parser(
         "config",
         help="Show or edit configuration",
+        parents=[common],
     )
 
     args = parser.parse_args(argv)
@@ -136,6 +150,43 @@ examples:
         _cmd_interactive(args)
 
 
+def _resolve_model(args: argparse.Namespace) -> str:
+    """Return a concrete model name, prompting the user if needed.
+
+    If ``--model`` was supplied, return it directly.  Otherwise, create
+    a temporary LLM client, list available models, and let the user
+    pick one interactively.
+    """
+    if args.model:
+        return args.model
+
+    from zhushou.llm.factory import LLMClientFactory
+    from zhushou.display.console import show_model_selector, show_info
+
+    kwargs: dict = {}
+    if args.base_url:
+        kwargs["base_url"] = args.base_url
+    if args.api_key:
+        kwargs["api_key"] = args.api_key
+    if args.proxy:
+        kwargs["proxy"] = args.proxy
+
+    client = LLMClientFactory.create_client(args.provider, **kwargs)
+
+    if not client.is_available():
+        print(f"Error: Cannot connect to {args.provider}. Is the service running?", file=sys.stderr)
+        sys.exit(1)
+
+    models = client.list_models()
+    if not models:
+        print(f"Error: No models found for provider '{args.provider}'.", file=sys.stderr)
+        sys.exit(1)
+
+    selected = show_model_selector(models)
+    show_info(f"Using {args.provider} / {selected}")
+    return selected
+
+
 def _cmd_chat(args: argparse.Namespace) -> None:
     """Handle the chat subcommand."""
     if not args.message:
@@ -143,12 +194,14 @@ def _cmd_chat(args: argparse.Namespace) -> None:
         _cmd_interactive(args)
         return
 
+    model = _resolve_model(args)
+
     from zhushou.api import chat
 
     result = chat(
         args.message,
         provider=args.provider,
-        model=args.model,
+        model=model,
         api_key=args.api_key,
         base_url=args.base_url,
         work_dir=args.output or ".",
@@ -166,6 +219,8 @@ def _cmd_chat(args: argparse.Namespace) -> None:
 
 def _cmd_pipeline(args: argparse.Namespace) -> None:
     """Handle the pipeline subcommand."""
+    model = _resolve_model(args)
+
     from zhushou.api import run_pipeline
 
     output_dir = args.output or "./output"
@@ -173,7 +228,7 @@ def _cmd_pipeline(args: argparse.Namespace) -> None:
         args.request,
         output_dir=output_dir,
         provider=args.provider,
-        model=args.model,
+        model=model,
         api_key=args.api_key,
         base_url=args.base_url,
         proxy=args.proxy,
@@ -259,32 +314,18 @@ def _cmd_interactive(args: argparse.Namespace) -> None:
 
         show_welcome()
 
+        model = _resolve_model(args)
+
         kwargs: dict = {}
         if args.base_url:
             kwargs["base_url"] = args.base_url
         if args.api_key:
             kwargs["api_key"] = args.api_key
-        if args.model:
-            kwargs["model"] = args.model
         if args.proxy:
             kwargs["proxy"] = args.proxy
+        kwargs["model"] = model
 
         client = LLMClientFactory.create_client(args.provider, **kwargs)
-
-        if not client.is_available():
-            show_error(f"Cannot connect to {args.provider}. Is the service running?")
-            sys.exit(1)
-
-        # Select model if not specified
-        if not args.model:
-            models = client.list_models()
-            if models:
-                from zhushou.display.console import show_model_selector
-                selected = show_model_selector(models)
-                client.model = selected
-            else:
-                show_error("No models available.")
-                sys.exit(1)
 
         show_info(f"Using {args.provider} / {client.model}")
 
