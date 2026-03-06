@@ -221,8 +221,8 @@ class AgentLoop:
                     "tool_call_id": getattr(tc, "id", f"call_{i}"),
                     "name": tc.name,
                     "content": (
-                        result.output
-                        if hasattr(result, "output")
+                        result["output"]
+                        if isinstance(result, dict)
                         else str(result)
                     ),
                 }

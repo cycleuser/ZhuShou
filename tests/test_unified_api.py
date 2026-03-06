@@ -1394,3 +1394,187 @@ class TestDocumentedPythonAPI:
         from zhushou.api import chat, run_pipeline
         assert "proxy" in inspect.signature(chat).parameters
         assert "proxy" in inspect.signature(run_pipeline).parameters
+
+
+# ===========================================================================
+# Ollama message sanitization
+# ===========================================================================
+
+class TestOllamaSanitizeMessages:
+    """Tests for OllamaLLMClient._sanitize_messages()."""
+
+    def _make_client(self):
+        from zhushou.llm.ollama_client import OllamaLLMClient
+        return OllamaLLMClient()
+
+    def test_plain_messages_unchanged(self):
+        client = self._make_client()
+        messages = [
+            {"role": "system", "content": "You are helpful."},
+            {"role": "user", "content": "Hello"},
+            {"role": "assistant", "content": "Hi there"},
+        ]
+        result = client._sanitize_messages(messages)
+        assert len(result) == 3
+        assert result[0] == {"role": "system", "content": "You are helpful."}
+        assert result[1] == {"role": "user", "content": "Hello"}
+        assert result[2] == {"role": "assistant", "content": "Hi there"}
+
+    def test_assistant_tool_calls_sanitized(self):
+        """String arguments should be deserialized; id/type should be stripped."""
+        client = self._make_client()
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_0",
+                        "type": "function",
+                        "function": {
+                            "name": "write_file",
+                            "arguments": '{"path": "main.py", "content": "print(1)"}',
+                        },
+                    }
+                ],
+            }
+        ]
+        result = client._sanitize_messages(messages)
+        assert len(result) == 1
+        msg = result[0]
+        assert msg["role"] == "assistant"
+        tc = msg["tool_calls"][0]
+        # id and type should be gone
+        assert "id" not in tc
+        assert "type" not in tc
+        # arguments should be a dict
+        assert isinstance(tc["function"]["arguments"], dict)
+        assert tc["function"]["arguments"]["path"] == "main.py"
+        assert tc["function"]["name"] == "write_file"
+
+    def test_tool_result_messages_sanitized(self):
+        """tool_call_id and name should be stripped from tool messages."""
+        client = self._make_client()
+        messages = [
+            {
+                "role": "tool",
+                "tool_call_id": "call_0",
+                "name": "write_file",
+                "content": "File written: main.py",
+            }
+        ]
+        result = client._sanitize_messages(messages)
+        assert len(result) == 1
+        msg = result[0]
+        assert msg == {"role": "tool", "content": "File written: main.py"}
+        assert "tool_call_id" not in msg
+        assert "name" not in msg
+
+    def test_mixed_conversation_sanitized(self):
+        """Full multi-turn conversation with tool calls round-trips correctly."""
+        client = self._make_client()
+        messages = [
+            {"role": "system", "content": "Be helpful."},
+            {"role": "user", "content": "Create a file"},
+            {
+                "role": "assistant",
+                "content": "I'll create it.",
+                "tool_calls": [
+                    {
+                        "id": "call_0",
+                        "type": "function",
+                        "function": {
+                            "name": "write_file",
+                            "arguments": '{"path": "x.py", "content": "pass"}',
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_0",
+                "name": "write_file",
+                "content": "File written: x.py",
+            },
+            {"role": "assistant", "content": "Done!"},
+        ]
+        result = client._sanitize_messages(messages)
+        assert len(result) == 5
+        # system & user unchanged
+        assert result[0]["role"] == "system"
+        assert result[1]["role"] == "user"
+        # assistant with tool_calls cleaned
+        assert isinstance(result[2]["tool_calls"][0]["function"]["arguments"], dict)
+        assert "id" not in result[2]["tool_calls"][0]
+        # tool result cleaned
+        assert result[3] == {"role": "tool", "content": "File written: x.py"}
+        # plain assistant unchanged
+        assert result[4] == {"role": "assistant", "content": "Done!"}
+
+    def test_malformed_arguments_handled(self):
+        """Invalid JSON in arguments should fall back to empty dict."""
+        client = self._make_client()
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_0",
+                        "type": "function",
+                        "function": {
+                            "name": "write_file",
+                            "arguments": "not valid json {{{",
+                        },
+                    }
+                ],
+            }
+        ]
+        result = client._sanitize_messages(messages)
+        tc = result[0]["tool_calls"][0]
+        assert tc["function"]["arguments"] == {}
+
+
+# ===========================================================================
+# Tool result dict access
+# ===========================================================================
+
+class TestToolResultDictAccess:
+    """Verify orchestrator and agent loop correctly extract output from dict results."""
+
+    def test_orchestrator_extracts_dict_output(self):
+        """_run_stage_with_tools should put clean output string in tool messages."""
+        from unittest.mock import MagicMock
+        from zhushou.llm.base import LLMResponse, ToolCallRequest
+
+        # First response: one tool call; second response: done
+        tool_call = ToolCallRequest(id="call_0", name="write_file",
+                                    arguments='{"path": "a.py", "content": "x"}')
+        resp_with_tool = LLMResponse(content="", tool_calls=[tool_call], finish_reason="tool_calls")
+        resp_done = LLMResponse(content="All done.", tool_calls=[], finish_reason="stop")
+
+        mock_client = MagicMock()
+        mock_client.chat = MagicMock(side_effect=[resp_with_tool, resp_done])
+
+        from zhushou.pipeline.orchestrator import PipelineOrchestrator
+        import tempfile, os
+        with tempfile.TemporaryDirectory() as tmpdir:
+            orch = PipelineOrchestrator(llm_client=mock_client, work_dir=tmpdir)
+            # Mock executor to return dict
+            orch.executor.execute = MagicMock(
+                return_value={"success": True, "output": "File written: a.py"}
+            )
+            result = orch._run_stage_with_tools(
+                system_prompt="test", user_prompt="test", temperature=0.3,
+            )
+
+        # Check the tool message that was sent in the 2nd chat() call
+        second_call_messages = mock_client.chat.call_args_list[1][1].get(
+            "messages", mock_client.chat.call_args_list[1][0][0]
+            if mock_client.chat.call_args_list[1][0] else []
+        )
+        tool_msgs = [m for m in second_call_messages if m.get("role") == "tool"]
+        assert len(tool_msgs) == 1
+        # Content must be clean string, NOT the dict repr
+        assert tool_msgs[0]["content"] == "File written: a.py"
+        assert "success" not in tool_msgs[0]["content"]

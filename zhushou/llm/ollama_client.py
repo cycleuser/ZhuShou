@@ -69,6 +69,7 @@ class OllamaLLMClient(BaseLLMClient):
         tools: list[dict[str, Any]] | None = None,
     ) -> LLMResponse:
         messages = self.validate_messages(messages)
+        messages = self._sanitize_messages(messages)
 
         payload: dict[str, Any] = {
             "model": self._model,
@@ -133,6 +134,7 @@ class OllamaLLMClient(BaseLLMClient):
         tools: list[dict[str, Any]] | None = None,
     ) -> Iterator[str]:
         messages = self.validate_messages(messages)
+        messages = self._sanitize_messages(messages)
 
         payload: dict[str, Any] = {
             "model": self._model,
@@ -213,6 +215,54 @@ class OllamaLLMClient(BaseLLMClient):
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
+
+    def _sanitize_messages(
+        self, messages: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Convert OpenAI-format tool messages to Ollama-compatible format.
+
+        * Assistant messages with ``tool_calls``: deserialise string
+          ``arguments`` to a dict and strip ``id`` / ``type`` wrappers.
+        * Tool-role messages: keep only ``role`` and ``content``
+          (strip ``tool_call_id`` and ``name``).
+        * All other messages pass through unchanged.
+        """
+        sanitized: list[dict[str, Any]] = []
+        for msg in messages:
+            role = msg.get("role")
+
+            if role == "assistant" and "tool_calls" in msg:
+                new_tool_calls: list[dict[str, Any]] = []
+                for tc in msg["tool_calls"]:
+                    fn = tc.get("function", tc)
+                    args = fn.get("arguments", {})
+                    if isinstance(args, str):
+                        try:
+                            args = json.loads(args)
+                        except (json.JSONDecodeError, TypeError):
+                            args = {}
+                    new_tool_calls.append({
+                        "function": {
+                            "name": fn.get("name", ""),
+                            "arguments": args,
+                        }
+                    })
+                sanitized.append({
+                    "role": "assistant",
+                    "content": msg.get("content", ""),
+                    "tool_calls": new_tool_calls,
+                })
+
+            elif role == "tool":
+                sanitized.append({
+                    "role": "tool",
+                    "content": msg.get("content", ""),
+                })
+
+            else:
+                sanitized.append(dict(msg))
+
+        return sanitized
 
     def _request_with_retry(
         self,

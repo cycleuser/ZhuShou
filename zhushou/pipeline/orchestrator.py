@@ -173,7 +173,9 @@ class PipelineOrchestrator:
                     "tool_call_id": getattr(tc, "id", f"call_{j}"),
                     "name": tc.name,
                     "content": (
-                        result.output if hasattr(result, "output") else str(result)
+                        result["output"]
+                        if isinstance(result, dict)
+                        else str(result)
                     ),
                 }
                 messages.append(tool_msg)
@@ -320,11 +322,16 @@ class PipelineOrchestrator:
         """Format tool execution results as a feedback message for the LLM."""
         parts: list[str] = []
         for r in results:
-            status = "SUCCESS" if getattr(r, "success", False) else "ERROR"
-            output = getattr(r, "output", str(r))
+            if isinstance(r, dict):
+                status = "SUCCESS" if r.get("success", False) else "ERROR"
+                output = r.get("output", str(r))
+                tool_name = r.get("tool_name", "unknown")
+            else:
+                status = "SUCCESS" if getattr(r, "success", False) else "ERROR"
+                output = getattr(r, "output", str(r))
+                tool_name = getattr(r, "tool_name", "unknown")
             if len(output) > 3000:
                 output = output[:3000] + "\n... (truncated)"
-            tool_name = getattr(r, "tool_name", "unknown")
             parts.append(f"[Tool Result: {tool_name} – {status}]\n{output}")
         return "\n\n".join(parts)
 
@@ -364,8 +371,12 @@ class PipelineOrchestrator:
         try:
             from zhushou.display.console import show_tool_result
 
-            success = getattr(result, "success", False)
-            output = getattr(result, "output", str(result))
+            if isinstance(result, dict):
+                success = result.get("success", False)
+                output = result.get("output", str(result))
+            else:
+                success = getattr(result, "success", False)
+                output = getattr(result, "output", str(result))
             show_tool_result(success, output)
         except Exception:
             logger.debug("Tool result: %s", result)
