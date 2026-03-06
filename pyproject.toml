@@ -1,0 +1,64 @@
+[build-system]
+requires = ["setuptools>=61.0,<77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "zhushou"
+dynamic = ["version"]
+description = "AI-powered development assistant with multi-model support, memory system, and autonomous coding pipeline"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [{name = "cycleuser"}]
+keywords = [
+    "ai", "assistant", "llm", "agent", "coding",
+    "openai", "anthropic", "ollama", "development",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Code Generators",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "httpx>=0.27",
+    "rich>=13.0",
+]
+
+[project.optional-dependencies]
+vector = ["chromadb>=0.4.0"]
+openai = ["openai>=1.0"]
+anthropic = ["anthropic>=0.20"]
+gemini = ["google-generativeai>=0.3"]
+all = [
+    "chromadb>=0.4.0",
+    "openai>=1.0",
+    "anthropic>=0.20",
+    "google-generativeai>=0.3",
+]
+dev = ["pytest>=7.0"]
+
+[project.scripts]
+zhushou = "zhushou.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/cycleuser/ZhuShou"
+Repository = "https://github.com/cycleuser/ZhuShou"
+Issues = "https://github.com/cycleuser/ZhuShou/issues"
+
+[tool.setuptools.dynamic]
+version = {attr = "zhushou.__version__"}
+
+[tool.setuptools.packages.find]
+include = ["zhushou*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]

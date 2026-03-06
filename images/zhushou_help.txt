@@ -1,0 +1,34 @@
+usage: zhushou [-h] [-V] [-v] [--json] [-q] [-o OUTPUT] [--provider PROVIDER]
+               [--model MODEL] [--api-key API_KEY] [--base-url BASE_URL]
+               {chat,pipeline,models,config} ...
+
+ZhuShou (助手) - AI-powered development assistant
+
+positional arguments:
+  {chat,pipeline,models,config}
+    chat                Send a message to the assistant
+    pipeline            Run the 7-stage autonomous coding pipeline
+    models              List available models across providers
+    config              Show or edit configuration
+
+options:
+  -h, --help            show this help message and exit
+  -V, --version         show program's version number and exit
+  -v, --verbose         Verbose output
+  --json                Output results as JSON
+  -q, --quiet           Suppress non-essential output
+  -o OUTPUT, --output OUTPUT
+                        Working / output directory
+  --provider PROVIDER   LLM provider: ollama, openai, anthropic, deepseek,
+                        gemini (default: ollama)
+  --model MODEL, -m MODEL
+                        Model name (default: provider default)
+  --api-key API_KEY     API key for cloud providers
+  --base-url BASE_URL   Custom API endpoint URL
+
+examples:
+  zhushou                              Launch interactive REPL
+  zhushou chat "Explain decorators"    Single-turn chat
+  zhushou pipeline "Build Gomoku" -o . Run 7-stage coding pipeline
+  zhushou models                       List available models
+  zhushou config                       Show configuration
