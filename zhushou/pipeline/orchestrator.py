@@ -15,30 +15,40 @@ import time
 from typing import Any
 
 from zhushou.executor.tool_executor import ToolExecutor
-from zhushou.pipeline.stages import ALL_STAGES, Stage, build_user_prompt
+from zhushou.pipeline.stages import ALL_STAGES, FULL_STAGES, Stage, build_user_prompt
 
 logger = logging.getLogger(__name__)
 
 
 class PipelineOrchestrator:
-    """Run the 7-stage autonomous coding pipeline."""
+    """Run the 7-stage (or 9-stage with --full) autonomous coding pipeline."""
 
     MAX_TOOL_TURNS: int = 15
     MAX_DEBUG_RETRIES: int = 5
+    MAX_TOTAL_DEBUG_ITERATIONS: int = 10
 
     def __init__(
         self,
         llm_client: Any,
         work_dir: str,
         python_path: str = "",
+        full_mode: bool = False,
     ) -> None:
         self.llm_client = llm_client
         self.work_dir = os.path.abspath(work_dir)
         self.python_path = python_path or "python3"
+        self.full_mode = full_mode
         self.executor = ToolExecutor(work_dir=self.work_dir)
 
         # Context accumulated across stages  (stage_name → output text)
         self.context: dict[str, str] = {}
+
+        # Latest pytest output captured directly from run_command tool results.
+        # More reliable than parsing LLM response text.
+        self.last_test_output: str = ""
+
+        # Total debug iterations across all debug phases (initial + re-debug)
+        self._total_debug_iterations: int = 0
 
         self.stats: dict[str, Any] = {
             "stages_completed": 0,
@@ -56,14 +66,23 @@ class PipelineOrchestrator:
         """Execute the full autonomous pipeline and return stats."""
         start_time = time.time()
         os.makedirs(self.work_dir, exist_ok=True)
-        total_stages = len(ALL_STAGES)
+        stages_to_run = FULL_STAGES if self.full_mode else ALL_STAGES
+        total_stages = len(stages_to_run)
 
-        for i, stage in enumerate(ALL_STAGES):
+        for i, stage in enumerate(stages_to_run):
             stage_num = i + 1
 
             # Stage 6 (debugging, index 5) uses a retry loop
             if i == 5:
                 self._run_debug_loop(user_request, stage_num, total_stages)
+                self.stats["stages_completed"] += 1
+                continue
+
+            # Stage 7 (verification, index 6) may trigger re-debug
+            if i == 6:
+                self._run_verify_debug_loop(
+                    user_request, stage, stage_num, total_stages,
+                )
                 self.stats["stages_completed"] += 1
                 continue
 
@@ -168,6 +187,12 @@ class PipelineOrchestrator:
                 result = self.executor.execute(tc.name, args)
                 self._show_tool_result(result)
 
+                # Capture pytest/py_compile output directly from tool result
+                if tc.name == "run_command" and isinstance(result, dict):
+                    cmd = args.get("command", "")
+                    if "pytest" in cmd or "py_compile" in cmd:
+                        self.last_test_output = result.get("output", "")
+
                 tool_msg: dict[str, Any] = {
                     "role": "tool",
                     "tool_call_id": getattr(tc, "id", f"call_{j}"),
@@ -201,12 +226,24 @@ class PipelineOrchestrator:
             self.stats["tests_passed"] = "All passed"
             return
 
-        debug_stage: Stage = ALL_STAGES[5]
+        debug_stage: Stage = ALL_STAGES[5]  # always index 5 in core stages
 
         for attempt in range(1, self.MAX_DEBUG_RETRIES + 1):
-            self.stats["debug_iterations"] = attempt
+            # Check total budget across all debug phases
+            if self._total_debug_iterations >= self.MAX_TOTAL_DEBUG_ITERATIONS:
+                self._show_error(
+                    f"Total debug budget exhausted "
+                    f"({self.MAX_TOTAL_DEBUG_ITERATIONS} iterations). Stopping."
+                )
+                break
+
+            self._total_debug_iterations += 1
+            self.stats["debug_iterations"] = self._total_debug_iterations
+            self.last_test_output = ""  # reset before each attempt
             self._show_info(
-                f"Debug attempt {attempt}/{self.MAX_DEBUG_RETRIES}..."
+                f"Debug attempt {attempt}/{self.MAX_DEBUG_RETRIES} "
+                f"(total: {self._total_debug_iterations}/"
+                f"{self.MAX_TOTAL_DEBUG_ITERATIONS})..."
             )
 
             user_prompt = build_user_prompt(5, user_request, self.context)
@@ -216,10 +253,13 @@ class PipelineOrchestrator:
                 temperature=debug_stage.temperature,
             )
 
-            # Check if the LLM re-ran tests and they passed
-            latest_test_output = self._find_latest_test_output(response)
-            if latest_test_output:
-                self.context["test_output"] = latest_test_output
+            # Prefer direct tool output over LLM text parsing
+            if self.last_test_output:
+                self.context["test_output"] = self.last_test_output
+            else:
+                latest_test_output = self._find_latest_test_output(response)
+                if latest_test_output:
+                    self.context["test_output"] = latest_test_output
 
             passed = self._tests_passed(self.context.get("test_output", ""))
             if passed:
@@ -237,13 +277,106 @@ class PipelineOrchestrator:
 
         # Exhausted retries
         logger.warning(
-            "Tests still failing after %d debug attempts", self.MAX_DEBUG_RETRIES
+            "Tests still failing after %d debug attempts "
+            "(%d total iterations)",
+            self.MAX_DEBUG_RETRIES,
+            self._total_debug_iterations,
         )
         self._show_error(
             f"Tests still failing after {self.MAX_DEBUG_RETRIES} debug attempts. "
             "Proceeding to verification."
         )
         self.stats["tests_passed"] = "Some failures remain"
+
+    # ── Verification ↔ Debug feedback loop ────────────────────────────
+
+    def _run_verification(
+        self,
+        user_request: str,
+        stage: Stage,
+        stage_num: int,
+        total_stages: int,
+    ) -> str:
+        """Run the verification stage once and capture test output."""
+        self._show_stage_header(stage_num, total_stages, stage.name)
+        self.last_test_output = ""  # reset
+
+        user_prompt = build_user_prompt(6, user_request, self.context)
+        response = self._run_stage_with_tools(
+            system_prompt=stage.system_prompt,
+            user_prompt=user_prompt,
+            temperature=stage.temperature,
+        )
+
+        # Update context with verification test output
+        if self.last_test_output:
+            self.context["test_output"] = self.last_test_output
+        else:
+            latest = self._find_latest_test_output(response)
+            if latest:
+                self.context["test_output"] = latest
+
+        return response
+
+    def _run_verify_debug_loop(
+        self,
+        user_request: str,
+        stage: Stage,
+        stage_num: int,
+        total_stages: int,
+    ) -> None:
+        """Run verification; if tests fail, loop back to debug and re-verify
+        until tests pass or the total debug budget is exhausted."""
+
+        # First verification pass
+        response = self._run_verification(
+            user_request, stage, stage_num, total_stages,
+        )
+        self._store_context(6, response)
+
+        # If tests already pass, we're done
+        if self._tests_passed(self.context.get("test_output", "")):
+            self.stats["tests_passed"] = "All passed"
+            self._show_info("Verification: all tests PASSED ✓")
+            return
+
+        # Loop: re-debug → re-verify until pass or budget exhausted
+        while (
+            not self._tests_passed(self.context.get("test_output", ""))
+            and self._total_debug_iterations < self.MAX_TOTAL_DEBUG_ITERATIONS
+        ):
+            self._show_info(
+                "Verification found test failures — re-entering debug loop "
+                f"(total iterations: {self._total_debug_iterations}/"
+                f"{self.MAX_TOTAL_DEBUG_ITERATIONS})"
+            )
+
+            # Re-run debug stage
+            self._run_debug_loop(
+                user_request, stage_num - 1, total_stages,
+            )
+
+            # If debug loop got tests to pass, skip re-verification
+            if self._tests_passed(self.context.get("test_output", "")):
+                self.stats["tests_passed"] = "All passed"
+                self._show_info("Debug loop resolved all failures ✓")
+                return
+
+            # Re-run verification
+            response = self._run_verification(
+                user_request, stage, stage_num, total_stages,
+            )
+            self._store_context(6, response)
+
+        if self._tests_passed(self.context.get("test_output", "")):
+            self.stats["tests_passed"] = "All passed"
+            self._show_info("Verification: all tests PASSED ✓")
+        else:
+            self._show_error(
+                f"Tests still failing after {self._total_debug_iterations} "
+                "total debug iterations. Pipeline will proceed."
+            )
+            self.stats["tests_passed"] = "Some failures remain"
 
     # ── Context management ─────────────────────────────────────────────
 
@@ -265,9 +398,28 @@ class PipelineOrchestrator:
                 "Files created:\n" + "\n".join(f"- {f}" for f in files)
             )
         elif stage_index == 4:
-            # Testing: extract test output
-            test_output = self._find_latest_test_output(response)
-            self.context["test_output"] = test_output or response
+            # Testing: prefer direct tool output over LLM text parsing
+            self.context["test_output"] = (
+                self.last_test_output
+                or self._find_latest_test_output(response)
+                or response
+            )
+        elif stage_index == 6:
+            # Verification: capture test output for potential re-debug
+            if self.last_test_output:
+                self.context["test_output"] = self.last_test_output
+            else:
+                latest = self._find_latest_test_output(response)
+                if latest:
+                    self.context["test_output"] = latest
+        elif stage_index == 7:
+            # Documentation: store README content
+            content = self._try_read_file("README.md")
+            self.context["documentation"] = content or response
+        elif stage_index == 8:
+            # Packaging: store pyproject.toml content
+            content = self._try_read_file("pyproject.toml")
+            self.context["packaging"] = content or response
 
     # ── Helpers ────────────────────────────────────────────────────────
 

@@ -417,7 +417,7 @@ class TestBuiltinTools:
     def test_all_tools_is_list(self):
         from zhushou.executor.builtin_tools import ALL_TOOLS
         assert isinstance(ALL_TOOLS, list)
-        assert len(ALL_TOOLS) == 11
+        assert len(ALL_TOOLS) == 12
 
     def test_tool_handlers_match_schemas(self):
         from zhushou.executor.builtin_tools import ALL_TOOLS, TOOL_HANDLERS
@@ -522,7 +522,7 @@ class TestToolExecutor:
         from zhushou.executor.tool_executor import ToolExecutor
         defs = ToolExecutor.get_tool_definitions()
         assert isinstance(defs, list)
-        assert len(defs) == 11
+        assert len(defs) == 12
 
     def test_files_created_tracking(self, tmp_work_dir):
         from zhushou.executor.tool_executor import ToolExecutor
@@ -1578,3 +1578,1189 @@ class TestToolResultDictAccess:
         # Content must be clean string, NOT the dict repr
         assert tool_msgs[0]["content"] == "File written: a.py"
         assert "success" not in tool_msgs[0]["content"]
+
+
+# ===========================================================================
+# Pipeline --full flag and FULL_STAGES
+# ===========================================================================
+
+class TestPipelineFullFlag:
+    """Tests for the --full pipeline flag and FULL_STAGES stage list."""
+
+    def test_stages_all_has_seven(self):
+        from zhushou.pipeline.stages import ALL_STAGES
+        assert len(ALL_STAGES) == 7
+
+    def test_stages_full_has_nine(self):
+        from zhushou.pipeline.stages import FULL_STAGES
+        assert len(FULL_STAGES) == 9
+
+    def test_full_stages_starts_with_all_stages(self):
+        from zhushou.pipeline.stages import ALL_STAGES, FULL_STAGES
+        for i, stage in enumerate(ALL_STAGES):
+            assert FULL_STAGES[i].name == stage.name
+
+    def test_full_stages_extra_names(self):
+        from zhushou.pipeline.stages import FULL_STAGES
+        assert FULL_STAGES[7].name == "Documentation"
+        assert FULL_STAGES[8].name == "Packaging"
+
+    def test_pipeline_help_has_full_flag(self):
+        r = subprocess.run(
+            [sys.executable, "-m", "zhushou", "pipeline", "--help"],
+            capture_output=True, text=True, timeout=15,
+        )
+        assert r.returncode == 0
+        assert "--full" in r.stdout
+
+    def test_pipeline_full_flag_parses(self):
+        with patch("zhushou.cli._cmd_pipeline") as mock:
+            from zhushou.cli import main
+            main(["pipeline", "test request", "--full"])
+            mock.assert_called_once()
+            args = mock.call_args[0][0]
+            assert args.full is True
+
+    def test_pipeline_without_full_defaults_false(self):
+        with patch("zhushou.cli._cmd_pipeline") as mock:
+            from zhushou.cli import main
+            main(["pipeline", "test request"])
+            mock.assert_called_once()
+            args = mock.call_args[0][0]
+            assert args.full is False
+
+    def test_run_pipeline_accepts_full_param(self):
+        import inspect
+        from zhushou.api import run_pipeline
+        assert "full" in inspect.signature(run_pipeline).parameters
+
+    def test_build_user_prompt_stage7(self):
+        from zhushou.pipeline.stages import build_user_prompt
+        ctx = {"requirements": "req", "architecture": "arch",
+               "implementation": "impl"}
+        prompt = build_user_prompt(7, "test project", ctx)
+        assert "README.md" in prompt
+        assert "README_CN.md" in prompt
+
+    def test_build_user_prompt_stage8(self):
+        from zhushou.pipeline.stages import build_user_prompt
+        ctx = {"requirements": "req", "architecture": "arch",
+               "implementation": "impl"}
+        prompt = build_user_prompt(8, "test project", ctx)
+        assert "pyproject.toml" in prompt
+        assert "upload_pypi" in prompt
+
+
+# ===========================================================================
+# Python file validation on write_file / edit_file
+# ===========================================================================
+
+class TestWriteFileValidation:
+    """Tests for automatic Python file validation in write_file and edit_file."""
+
+    def test_valid_python_no_warnings(self, tmp_path):
+        from zhushou.executor.builtin_tools import _handle_write_file
+        result = _handle_write_file(str(tmp_path), {
+            "path": "good.py",
+            "content": "def greet(name):\n    return f'Hello, {name}!'\n",
+        })
+        assert result["success"] is True
+        assert "WARNING" not in result["output"]
+        assert "File written: good.py" in result["output"]
+
+    def test_syntax_error_detected(self, tmp_path):
+        from zhushou.executor.builtin_tools import _handle_write_file
+        result = _handle_write_file(str(tmp_path), {
+            "path": "bad.py",
+            "content": "def foo(:\n    pass\n",
+        })
+        assert result["success"] is True  # file IS written
+        assert "SYNTAX ERROR" in result["output"]
+        assert "fix them NOW" in result["output"]
+
+    def test_stub_function_detected(self, tmp_path):
+        from zhushou.executor.builtin_tools import _handle_write_file
+        result = _handle_write_file(str(tmp_path), {
+            "path": "stub.py",
+            "content": "def check_winner(board, player):\n    pass\n",
+        })
+        assert result["success"] is True
+        assert "STUB" in result["output"]
+        assert "check_winner" in result["output"]
+        assert "write real implementation" in result["output"]
+
+    def test_docstring_plus_pass_detected(self, tmp_path):
+        from zhushou.executor.builtin_tools import _handle_write_file
+        result = _handle_write_file(str(tmp_path), {
+            "path": "docstub.py",
+            "content": (
+                "def process(data):\n"
+                '    """Process the data."""\n'
+                "    pass\n"
+            ),
+        })
+        assert result["success"] is True
+        assert "STUB" in result["output"]
+        assert "process" in result["output"]
+
+    def test_real_function_no_warning(self, tmp_path):
+        from zhushou.executor.builtin_tools import _handle_write_file
+        result = _handle_write_file(str(tmp_path), {
+            "path": "real.py",
+            "content": (
+                "def add(a, b):\n"
+                "    result = a + b\n"
+                "    return result\n"
+            ),
+        })
+        assert result["success"] is True
+        assert "WARNING" not in result["output"]
+
+    def test_non_python_file_no_validation(self, tmp_path):
+        from zhushou.executor.builtin_tools import _handle_write_file
+        result = _handle_write_file(str(tmp_path), {
+            "path": "readme.md",
+            "content": "# Hello\nsome content\n",
+        })
+        assert result["success"] is True
+        assert "WARNING" not in result["output"]
+
+    def test_multiple_stubs_all_reported(self, tmp_path):
+        from zhushou.executor.builtin_tools import _handle_write_file
+        result = _handle_write_file(str(tmp_path), {
+            "path": "multi.py",
+            "content": (
+                "def foo():\n    pass\n\n"
+                "def bar():\n    pass\n\n"
+                "def baz():\n    pass\n"
+            ),
+        })
+        assert result["success"] is True
+        assert result["output"].count("STUB") == 3
+        assert "foo" in result["output"]
+        assert "bar" in result["output"]
+        assert "baz" in result["output"]
+
+    def test_edit_file_validates_python(self, tmp_path):
+        from zhushou.executor.builtin_tools import (
+            _handle_write_file, _handle_edit_file,
+        )
+        # Write a valid file first
+        _handle_write_file(str(tmp_path), {
+            "path": "edit_me.py",
+            "content": "def greet():\n    return 'hi'\n",
+        })
+        # Edit to introduce a stub
+        result = _handle_edit_file(str(tmp_path), {
+            "path": "edit_me.py",
+            "old_text": "    return 'hi'",
+            "new_text": "    pass",
+        })
+        assert result["success"] is True
+        assert "STUB" in result["output"]
+
+    def test_validate_python_file_directly(self):
+        """Test _validate_python_file function independently."""
+        import tempfile
+        from zhushou.executor.builtin_tools import _validate_python_file
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
+            f.write("def broken(:\n    pass\n")
+            f.flush()
+            warnings = _validate_python_file(f.name)
+            assert any("SYNTAX ERROR" in w for w in warnings)
+            os.unlink(f.name)
+
+    def test_validate_clean_file(self):
+        """Clean files produce no warnings."""
+        import tempfile
+        from zhushou.executor.builtin_tools import _validate_python_file
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
+            f.write("def add(a, b):\n    return a + b\n")
+            f.flush()
+            warnings = _validate_python_file(f.name)
+            assert warnings == []
+            os.unlink(f.name)
+
+
+# ===========================================================================
+# scaffold_project tool
+# ===========================================================================
+
+class TestScaffoldProject:
+    """Tests for the scaffold_project built-in tool."""
+
+    def test_scaffold_creates_package_dir(self, tmp_path):
+        from zhushou.executor.builtin_tools import _handle_scaffold_project
+        result = _handle_scaffold_project(str(tmp_path), {
+            "package_name": "calculator",
+            "description": "A simple calculator",
+        })
+        assert result["success"] is True
+        assert (tmp_path / "calculator").is_dir()
+
+    def test_scaffold_creates_all_package_files(self, tmp_path):
+        from zhushou.executor.builtin_tools import _handle_scaffold_project
+        _handle_scaffold_project(str(tmp_path), {
+            "package_name": "calculator",
+            "description": "A simple calculator",
+        })
+        expected = ["__init__.py", "__main__.py", "api.py", "cli.py", "tools.py"]
+        for f in expected:
+            assert (tmp_path / "calculator" / f).is_file(), f"Missing {f}"
+
+    def test_scaffold_creates_tests_dir(self, tmp_path):
+        from zhushou.executor.builtin_tools import _handle_scaffold_project
+        _handle_scaffold_project(str(tmp_path), {
+            "package_name": "calculator",
+            "description": "A simple calculator",
+        })
+        assert (tmp_path / "tests" / "__init__.py").is_file()
+        assert (tmp_path / "tests" / "conftest.py").is_file()
+
+    def test_scaffold_creates_docs_dir(self, tmp_path):
+        from zhushou.executor.builtin_tools import _handle_scaffold_project
+        _handle_scaffold_project(str(tmp_path), {
+            "package_name": "calculator",
+            "description": "A simple calculator",
+        })
+        assert (tmp_path / "docs").is_dir()
+
+    def test_scaffold_substitutes_package_name(self, tmp_path):
+        from zhushou.executor.builtin_tools import _handle_scaffold_project
+        _handle_scaffold_project(str(tmp_path), {
+            "package_name": "myapp",
+            "description": "My application",
+        })
+        init_content = (tmp_path / "myapp" / "__init__.py").read_text()
+        assert "myapp" in init_content
+        assert "{{package_name}}" not in init_content
+
+    def test_scaffold_substitutes_description(self, tmp_path):
+        from zhushou.executor.builtin_tools import _handle_scaffold_project
+        _handle_scaffold_project(str(tmp_path), {
+            "package_name": "myapp",
+            "description": "My cool application",
+        })
+        init_content = (tmp_path / "myapp" / "__init__.py").read_text()
+        assert "My cool application" in init_content
+        cli_content = (tmp_path / "myapp" / "cli.py").read_text()
+        assert "My cool application" in cli_content
+
+    def test_scaffold_cli_has_standard_flags(self, tmp_path):
+        from zhushou.executor.builtin_tools import _handle_scaffold_project
+        _handle_scaffold_project(str(tmp_path), {
+            "package_name": "myapp",
+            "description": "Test app",
+        })
+        cli_content = (tmp_path / "myapp" / "cli.py").read_text()
+        assert "--version" in cli_content
+        assert "--verbose" in cli_content
+        assert "--json" in cli_content
+        assert "--quiet" in cli_content
+        assert "--output" in cli_content
+
+    def test_scaffold_api_has_toolresult(self, tmp_path):
+        from zhushou.executor.builtin_tools import _handle_scaffold_project
+        _handle_scaffold_project(str(tmp_path), {
+            "package_name": "myapp",
+            "description": "Test app",
+        })
+        api_content = (tmp_path / "myapp" / "api.py").read_text()
+        assert "class ToolResult" in api_content
+        assert "def to_dict" in api_content
+        assert "success" in api_content
+
+    def test_scaffold_tools_has_dispatch(self, tmp_path):
+        from zhushou.executor.builtin_tools import _handle_scaffold_project
+        _handle_scaffold_project(str(tmp_path), {
+            "package_name": "myapp",
+            "description": "Test app",
+        })
+        tools_content = (tmp_path / "myapp" / "tools.py").read_text()
+        assert "def dispatch" in tools_content
+        assert "TOOLS" in tools_content
+
+    def test_scaffold_conftest_has_sys_path(self, tmp_path):
+        from zhushou.executor.builtin_tools import _handle_scaffold_project
+        _handle_scaffold_project(str(tmp_path), {
+            "package_name": "myapp",
+            "description": "Test app",
+        })
+        conftest_content = (tmp_path / "tests" / "conftest.py").read_text()
+        assert "sys.path" in conftest_content
+
+    def test_scaffold_missing_package_name(self, tmp_path):
+        from zhushou.executor.builtin_tools import _handle_scaffold_project
+        result = _handle_scaffold_project(str(tmp_path), {
+            "description": "Test app",
+        })
+        assert result["success"] is False
+        assert "package_name" in result["output"]
+
+    def test_scaffold_missing_description(self, tmp_path):
+        from zhushou.executor.builtin_tools import _handle_scaffold_project
+        result = _handle_scaffold_project(str(tmp_path), {
+            "package_name": "myapp",
+        })
+        assert result["success"] is False
+        assert "description" in result["output"]
+
+    def test_scaffold_invalid_package_name(self, tmp_path):
+        from zhushou.executor.builtin_tools import _handle_scaffold_project
+        result = _handle_scaffold_project(str(tmp_path), {
+            "package_name": "Invalid-Name",
+            "description": "Bad name test",
+        })
+        assert result["success"] is False
+        assert "Invalid" in result["output"]
+
+    def test_scaffold_output_lists_files(self, tmp_path):
+        from zhushou.executor.builtin_tools import _handle_scaffold_project
+        result = _handle_scaffold_project(str(tmp_path), {
+            "package_name": "myapp",
+            "description": "Test app",
+        })
+        assert result["success"] is True
+        assert "myapp/__init__.py" in result["output"]
+        assert "myapp/api.py" in result["output"]
+        assert "myapp/cli.py" in result["output"]
+        assert "myapp/tools.py" in result["output"]
+        assert "tests/conftest.py" in result["output"]
+
+    def test_scaffold_output_has_next_steps(self, tmp_path):
+        from zhushou.executor.builtin_tools import _handle_scaffold_project
+        result = _handle_scaffold_project(str(tmp_path), {
+            "package_name": "myapp",
+            "description": "Test app",
+        })
+        assert result["success"] is True
+        assert "core.py" in result["output"]
+        assert "Next steps" in result["output"]
+
+    def test_scaffold_in_all_tools_registry(self):
+        from zhushou.executor.builtin_tools import ALL_TOOLS, TOOL_HANDLERS
+        names = {t["function"]["name"] for t in ALL_TOOLS}
+        assert "scaffold_project" in names
+        assert "scaffold_project" in TOOL_HANDLERS
+
+    def test_scaffold_schema_structure(self):
+        from zhushou.executor.builtin_tools import SCAFFOLD_PROJECT_SCHEMA
+        func = SCAFFOLD_PROJECT_SCHEMA["function"]
+        assert func["name"] == "scaffold_project"
+        assert "package_name" in func["parameters"]["properties"]
+        assert "description" in func["parameters"]["properties"]
+        assert set(func["parameters"]["required"]) == {"package_name", "description"}
+
+    def test_scaffold_main_py_is_static(self, tmp_path):
+        from zhushou.executor.builtin_tools import _handle_scaffold_project
+        _handle_scaffold_project(str(tmp_path), {
+            "package_name": "myapp",
+            "description": "Test app",
+        })
+        main_content = (tmp_path / "myapp" / "__main__.py").read_text()
+        assert "from .cli import main" in main_content
+        assert "main()" in main_content
+
+    def test_scaffold_init_exports_toolresult(self, tmp_path):
+        from zhushou.executor.builtin_tools import _handle_scaffold_project
+        _handle_scaffold_project(str(tmp_path), {
+            "package_name": "myapp",
+            "description": "Test app",
+        })
+        init_content = (tmp_path / "myapp" / "__init__.py").read_text()
+        assert "ToolResult" in init_content
+        assert "__version__" in init_content
+
+
+# ===========================================================================
+# scaffold_project — runtime execution tests
+# ===========================================================================
+
+class TestScaffoldProjectRuntime:
+    """Actually run the generated scaffold code via subprocess to verify
+    it produces a working Python package, not just syntactically plausible files."""
+
+    def _scaffold(self, tmp_path, pkg="myapp", desc="Test application"):
+        from zhushou.executor.builtin_tools import _handle_scaffold_project
+        result = _handle_scaffold_project(str(tmp_path), {
+            "package_name": pkg,
+            "description": desc,
+        })
+        assert result["success"] is True
+        return result
+
+    def _run(self, tmp_path, *args, **kwargs):
+        return subprocess.run(
+            [sys.executable] + list(args),
+            cwd=str(tmp_path),
+            capture_output=True,
+            text=True,
+            timeout=30,
+            **kwargs,
+        )
+
+    def test_runtime_import_package(self, tmp_path):
+        """Scaffold generates a package that can actually be imported."""
+        self._scaffold(tmp_path)
+        r = self._run(tmp_path, "-c", "import myapp")
+        assert r.returncode == 0, f"Import failed:\nstdout: {r.stdout}\nstderr: {r.stderr}"
+
+    def test_runtime_import_toolresult(self, tmp_path):
+        """ToolResult dataclass can be instantiated and to_dict() works."""
+        self._scaffold(tmp_path)
+        code = (
+            "from myapp.api import ToolResult; "
+            "r = ToolResult(success=True, data=42); "
+            "d = r.to_dict(); "
+            "assert d['success'] is True; "
+            "assert d['data'] == 42; "
+            "assert d['error'] is None; "
+            "assert isinstance(d['metadata'], dict); "
+            "print('ToolResult OK')"
+        )
+        r = self._run(tmp_path, "-c", code)
+        assert r.returncode == 0, f"ToolResult test failed:\n{r.stderr}"
+        assert "ToolResult OK" in r.stdout
+
+    def test_runtime_cli_help(self, tmp_path):
+        """Generated CLI --help shows all 5 standard flags."""
+        self._scaffold(tmp_path)
+        r = self._run(tmp_path, "-m", "myapp", "--help")
+        assert r.returncode == 0, f"CLI --help failed:\n{r.stderr}"
+        for flag in ["--version", "--verbose", "--json", "--quiet", "--output"]:
+            assert flag in r.stdout, f"Missing {flag} in --help output"
+
+    def test_runtime_cli_version(self, tmp_path):
+        """Generated CLI -V prints version 0.1.0."""
+        self._scaffold(tmp_path)
+        r = self._run(tmp_path, "-m", "myapp", "-V")
+        assert r.returncode == 0, f"CLI -V failed:\n{r.stderr}"
+        assert "0.1.0" in r.stdout
+
+    def test_runtime_import_tools(self, tmp_path):
+        """tools.py TOOLS list and dispatch() function are importable."""
+        self._scaffold(tmp_path)
+        code = (
+            "from myapp.tools import TOOLS, dispatch; "
+            "assert isinstance(TOOLS, list); "
+            "assert callable(dispatch); "
+            "print('tools OK')"
+        )
+        r = self._run(tmp_path, "-c", code)
+        assert r.returncode == 0, f"Tools import failed:\n{r.stderr}"
+        assert "tools OK" in r.stdout
+
+    def test_runtime_dispatch_unknown_raises(self, tmp_path):
+        """dispatch() raises ValueError for unknown tool names."""
+        self._scaffold(tmp_path)
+        script = tmp_path / "_test_dispatch.py"
+        script.write_text(
+            "from myapp.tools import dispatch\n"
+            "try:\n"
+            "    dispatch('nonexistent_tool', {})\n"
+            "    raise AssertionError('Should have raised ValueError')\n"
+            "except ValueError as e:\n"
+            "    assert 'Unknown tool' in str(e)\n"
+            "    print('ValueError OK')\n"
+        )
+        r = self._run(tmp_path, str(script))
+        assert r.returncode == 0, f"Dispatch test failed:\n{r.stderr}"
+        assert "ValueError OK" in r.stdout
+
+    def test_runtime_init_exports(self, tmp_path):
+        """__init__.py exports __version__ and ToolResult correctly."""
+        self._scaffold(tmp_path)
+        code = (
+            "from myapp import __version__, ToolResult; "
+            "assert __version__ == '0.1.0'; "
+            "assert ToolResult is not None; "
+            "r = ToolResult(success=False, error='test'); "
+            "assert r.success is False; "
+            "assert r.error == 'test'; "
+            "print('init exports OK')"
+        )
+        r = self._run(tmp_path, "-c", code)
+        assert r.returncode == 0, f"Init exports failed:\n{r.stderr}"
+        assert "init exports OK" in r.stdout
+
+    def test_runtime_conftest_importable(self, tmp_path):
+        """tests/conftest.py can be executed without errors."""
+        self._scaffold(tmp_path)
+        r = self._run(tmp_path, str(tmp_path / "tests" / "conftest.py"))
+        assert r.returncode == 0, f"conftest.py failed:\n{r.stderr}"
+
+    def test_runtime_all_py_syntax_valid(self, tmp_path):
+        """Every generated .py file passes py_compile."""
+        self._scaffold(tmp_path)
+        py_files = [
+            f"myapp/{f}" for f in
+            ["__init__.py", "__main__.py", "api.py", "cli.py", "tools.py"]
+        ] + ["tests/conftest.py"]
+        for rel_path in py_files:
+            abs_path = str(tmp_path / rel_path)
+            r = self._run(tmp_path, "-m", "py_compile", abs_path)
+            assert r.returncode == 0, (
+                f"py_compile failed for {rel_path}:\n{r.stderr}"
+            )
+
+
+# ===========================================================================
+# scaffold_project — end-to-end: scaffold + implement + run
+# ===========================================================================
+
+class TestScaffoldEndToEnd:
+    """Simulate the full Stage 2 -> Stage 4 workflow: scaffold a project,
+    add real implementation code (as the LLM would), then verify the
+    complete package works — API, CLI, tools dispatch, and pytest."""
+
+    @pytest.fixture(autouse=True)
+    def _setup_calculator(self, tmp_path):
+        """Scaffold 'calculator' and add real implementation code."""
+        from zhushou.executor.builtin_tools import _handle_scaffold_project
+
+        # ── Stage 2: scaffold ──
+        result = _handle_scaffold_project(str(tmp_path), {
+            "package_name": "calculator",
+            "description": "A simple calculator",
+        })
+        assert result["success"] is True
+
+        # ── Stage 4: add real implementation ──
+
+        # 1. core.py — new file
+        (tmp_path / "calculator" / "core.py").write_text(
+            '"""Calculator core logic."""\n'
+            "\n"
+            "\n"
+            "def add(a: float, b: float) -> float:\n"
+            "    return a + b\n"
+            "\n"
+            "\n"
+            "def subtract(a: float, b: float) -> float:\n"
+            "    return a - b\n"
+            "\n"
+            "\n"
+            "def multiply(a: float, b: float) -> float:\n"
+            "    return a * b\n"
+            "\n"
+            "\n"
+            "def divide(a: float, b: float) -> float:\n"
+            "    if b == 0:\n"
+            '        raise ValueError("Cannot divide by zero")\n'
+            "    return a / b\n"
+        )
+
+        # 2. api.py — replace TODO block with real API functions
+        api_path = tmp_path / "calculator" / "api.py"
+        api_content = api_path.read_text()
+        api_content = api_content.replace(
+            "# ---------------------------------------------------------------------------\n"
+            "# Add your API wrapper functions below.\n"
+            "#\n"
+            "# Each function should:\n"
+            "#   1. Accept clear parameters\n"
+            "#   2. Call core logic from core.py\n"
+            "#   3. Return ToolResult(success=True, data=...) on success\n"
+            "#   4. Catch exceptions and return ToolResult(success=False, error=str(e))\n"
+            "#\n"
+            "# Example:\n"
+            "#\n"
+            "#   def do_something(input_text: str) -> ToolResult:\n"
+            "#       try:\n"
+            "#           from .core import process\n"
+            "#           result = process(input_text)\n"
+            "#           return ToolResult(success=True, data=result)\n"
+            "#       except Exception as e:\n"
+            "#           return ToolResult(success=False, error=str(e))\n"
+            "# ---------------------------------------------------------------------------\n",
+            "def calculate(operation: str, a: float, b: float) -> ToolResult:\n"
+            '    """Perform a calculation."""\n'
+            "    try:\n"
+            "        from .core import add, subtract, multiply, divide\n"
+            "        ops = {'add': add, 'subtract': subtract,\n"
+            "               'multiply': multiply, 'divide': divide}\n"
+            "        if operation not in ops:\n"
+            '            return ToolResult(success=False, error=f"Unknown operation: {operation}")\n'
+            "        result = ops[operation](a, b)\n"
+            "        return ToolResult(success=True, data=result,\n"
+            "                         metadata={'operation': operation})\n"
+            "    except Exception as e:\n"
+            "        return ToolResult(success=False, error=str(e))\n",
+        )
+        api_path.write_text(api_content)
+
+        # 3. cli.py — add positional args and dispatch logic
+        cli_path = tmp_path / "calculator" / "cli.py"
+        cli_content = cli_path.read_text()
+        # Replace project-specific args TODO
+        cli_content = cli_content.replace(
+            "    # ── Project-specific arguments ────────────────────────────────\n"
+            "    # TODO: Add your project-specific arguments here.\n"
+            "    # Example:\n"
+            "    #   parser.add_argument(\"input\", help=\"Input file or value\")\n"
+            '    #   parser.add_argument("--format", choices=["csv","json"], default="json")\n',
+            '    parser.add_argument("operation", choices=["add", "subtract", "multiply", "divide"],\n'
+            '                        help="Math operation to perform")\n'
+            '    parser.add_argument("a", type=float, help="First number")\n'
+            '    parser.add_argument("b", type=float, help="Second number")\n',
+        )
+        # Replace dispatch TODO
+        cli_content = cli_content.replace(
+            "    # ── Dispatch ──────────────────────────────────────────────────\n"
+            "    # TODO: Call your core logic or API functions here.\n"
+            "    # Example:\n"
+            "    #   from .api import do_something\n"
+            "    #   result = do_something(args.input)\n"
+            "    #   if args.json_output:\n"
+            "    #       print(json.dumps(result.to_dict(), ensure_ascii=False, indent=2))\n"
+            "    #   elif result.success:\n"
+            "    #       print(result.data)\n"
+            "    #   else:\n"
+            '    #       print(f"Error: {result.error}", file=sys.stderr)\n'
+            "    #       sys.exit(1)\n"
+            "\n"
+            "    parser.print_help()\n",
+            "    from .api import calculate\n"
+            "    result = calculate(args.operation, args.a, args.b)\n"
+            "    if args.json_output:\n"
+            "        print(json.dumps(result.to_dict(), ensure_ascii=False, indent=2))\n"
+            "    elif result.success:\n"
+            "        print(result.data)\n"
+            "    else:\n"
+            '        print(f"Error: {result.error}", file=sys.stderr)\n'
+            "        sys.exit(1)\n",
+        )
+        cli_path.write_text(cli_content)
+
+        # 4. tools.py — add tool schema and dispatch case
+        tools_path = tmp_path / "calculator" / "tools.py"
+        tools_content = tools_path.read_text()
+        tools_content = tools_content.replace(
+            "TOOLS: list[dict[str, Any]] = [\n"
+            "    # TODO: Add your tool definitions here.\n"
+            "]\n",
+            "TOOLS: list[dict[str, Any]] = [\n"
+            "    {\n"
+            '        "type": "function",\n'
+            '        "function": {\n'
+            '            "name": "calculator_calculate",\n'
+            '            "description": "Perform a math calculation.",\n'
+            '            "parameters": {\n'
+            '                "type": "object",\n'
+            '                "properties": {\n'
+            '                    "operation": {\n'
+            '                        "type": "string",\n'
+            '                        "description": "Math operation.",\n'
+            '                        "enum": ["add", "subtract", "multiply", "divide"],\n'
+            "                    },\n"
+            '                    "a": {"type": "number", "description": "First number."},\n'
+            '                    "b": {"type": "number", "description": "Second number."},\n'
+            "                },\n"
+            '                "required": ["operation", "a", "b"],\n'
+            "            },\n"
+            "        },\n"
+            "    },\n"
+            "]\n",
+        )
+        tools_content = tools_content.replace(
+            "    # TODO: Add dispatch cases here.  Example:\n"
+            "    #\n"
+            '    #   if name == "calculator_do_something":\n'
+            "    #       from .api import do_something\n"
+            "    #       return do_something(**arguments).to_dict()\n",
+            '    if name == "calculator_calculate":\n'
+            "        from .api import calculate\n"
+            "        return calculate(**arguments).to_dict()\n",
+        )
+        tools_path.write_text(tools_content)
+
+        # 5. __init__.py — export calculate
+        init_path = tmp_path / "calculator" / "__init__.py"
+        init_content = init_path.read_text()
+        init_content = init_content.replace(
+            "from .api import ToolResult  # noqa: F401\n"
+            "\n"
+            '__all__ = ["__version__", "ToolResult"]\n',
+            "from .api import ToolResult, calculate  # noqa: F401\n"
+            "\n"
+            '__all__ = ["__version__", "ToolResult", "calculate"]\n',
+        )
+        init_path.write_text(init_content)
+
+        # 6. tests/test_calculator.py — a real test file
+        (tmp_path / "tests" / "test_calculator.py").write_text(
+            "from calculator.api import ToolResult, calculate\n"
+            "\n"
+            "\n"
+            "class TestCalculate:\n"
+            "    def test_add(self):\n"
+            "        r = calculate('add', 2, 3)\n"
+            "        assert r.success is True\n"
+            "        assert r.data == 5\n"
+            "\n"
+            "    def test_subtract(self):\n"
+            "        r = calculate('subtract', 10, 4)\n"
+            "        assert r.success is True\n"
+            "        assert r.data == 6\n"
+            "\n"
+            "    def test_multiply(self):\n"
+            "        r = calculate('multiply', 3, 7)\n"
+            "        assert r.success is True\n"
+            "        assert r.data == 21\n"
+            "\n"
+            "    def test_divide(self):\n"
+            "        r = calculate('divide', 10, 2)\n"
+            "        assert r.success is True\n"
+            "        assert r.data == 5.0\n"
+            "\n"
+            "    def test_divide_by_zero(self):\n"
+            "        r = calculate('divide', 1, 0)\n"
+            "        assert r.success is False\n"
+            "        assert 'zero' in r.error.lower()\n"
+            "\n"
+            "    def test_unknown_operation(self):\n"
+            "        r = calculate('modulus', 5, 3)\n"
+            "        assert r.success is False\n"
+            "\n"
+            "    def test_returns_toolresult(self):\n"
+            "        r = calculate('add', 1, 1)\n"
+            "        assert isinstance(r, ToolResult)\n"
+            "        d = r.to_dict()\n"
+            "        assert 'success' in d\n"
+            "        assert 'data' in d\n"
+            "        assert 'error' in d\n"
+            "        assert 'metadata' in d\n"
+        )
+
+        self.tmp_path = tmp_path
+
+    def _run(self, *args):
+        return subprocess.run(
+            [sys.executable] + list(args),
+            cwd=str(self.tmp_path),
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+    def test_e2e_api_function(self):
+        """API function calculate() returns correct ToolResult."""
+        code = (
+            "from calculator.api import calculate; "
+            "r = calculate('add', 2, 3); "
+            "assert r.success is True; "
+            "assert r.data == 5; "
+            "assert r.metadata == {'operation': 'add'}; "
+            "r2 = calculate('divide', 1, 0); "
+            "assert r2.success is False; "
+            "assert 'zero' in r2.error.lower(); "
+            "print('API OK')"
+        )
+        r = self._run("-c", code)
+        assert r.returncode == 0, f"API test failed:\n{r.stderr}"
+        assert "API OK" in r.stdout
+
+    def test_e2e_cli_execution(self):
+        """CLI runs and prints result to stdout."""
+        r = self._run("-m", "calculator", "add", "2", "3")
+        assert r.returncode == 0, f"CLI failed:\n{r.stderr}"
+        assert "5" in r.stdout.strip()
+
+    def test_e2e_cli_json_output(self):
+        """CLI --json flag produces valid JSON with correct structure."""
+        r = self._run("-m", "calculator", "add", "10", "20", "--json")
+        assert r.returncode == 0, f"CLI --json failed:\n{r.stderr}"
+        data = json.loads(r.stdout)
+        assert data["success"] is True
+        assert data["data"] == 30
+        assert data["error"] is None
+        assert data["metadata"]["operation"] == "add"
+
+    def test_e2e_tool_dispatch(self):
+        """tools.dispatch() routes to API and returns dict."""
+        code = (
+            "from calculator.tools import dispatch; "
+            "r = dispatch('calculator_calculate', "
+            "{'operation': 'multiply', 'a': 4, 'b': 5}); "
+            "assert isinstance(r, dict); "
+            "assert r['success'] is True; "
+            "assert r['data'] == 20; "
+            "print('dispatch OK')"
+        )
+        r = self._run("-c", code)
+        assert r.returncode == 0, f"Dispatch test failed:\n{r.stderr}"
+        assert "dispatch OK" in r.stdout
+
+    def test_e2e_tool_dispatch_json_args(self):
+        """tools.dispatch() accepts JSON string arguments."""
+        code = (
+            "import json; "
+            "from calculator.tools import dispatch; "
+            "args = json.dumps({'operation': 'subtract', 'a': 100, 'b': 37}); "
+            "r = dispatch('calculator_calculate', args); "
+            "assert r['success'] is True; "
+            "assert r['data'] == 63; "
+            "print('JSON args OK')"
+        )
+        r = self._run("-c", code)
+        assert r.returncode == 0, f"JSON args dispatch failed:\n{r.stderr}"
+        assert "JSON args OK" in r.stdout
+
+    def test_e2e_pytest_runs(self):
+        """pytest discovers and passes all tests in the generated project."""
+        r = self._run("-m", "pytest", "tests/", "-v")
+        assert r.returncode == 0, (
+            f"pytest failed in generated project:\n"
+            f"stdout:\n{r.stdout}\nstderr:\n{r.stderr}"
+        )
+        # Verify all 7 test cases passed
+        assert "7 passed" in r.stdout or "7 passed" in r.stderr
+
+
+# ===========================================================================
+# Pipeline iterative debug loop
+# ===========================================================================
+
+class TestPipelineIterativeDebug:
+    """Tests for the iterative debug-until-pass loop in PipelineOrchestrator."""
+
+    # ── _tests_passed() static method ──────────────────────────────────
+
+    def test_tests_passed_detects_all_passed(self):
+        from zhushou.pipeline.orchestrator import PipelineOrchestrator
+        assert PipelineOrchestrator._tests_passed(
+            "====== 5 passed in 0.3s ======"
+        ) is True
+
+    def test_tests_passed_detects_failure(self):
+        from zhushou.pipeline.orchestrator import PipelineOrchestrator
+        assert PipelineOrchestrator._tests_passed(
+            "====== 3 passed, 2 failed in 0.5s ======"
+        ) is False
+
+    def test_tests_passed_empty_string(self):
+        from zhushou.pipeline.orchestrator import PipelineOrchestrator
+        assert PipelineOrchestrator._tests_passed("") is False
+
+    def test_tests_passed_zero_failed(self):
+        from zhushou.pipeline.orchestrator import PipelineOrchestrator
+        assert PipelineOrchestrator._tests_passed(
+            "5 passed, 0 failed"
+        ) is True
+
+    def test_tests_passed_error_in_output(self):
+        from zhushou.pipeline.orchestrator import PipelineOrchestrator
+        assert PipelineOrchestrator._tests_passed(
+            "ERROR collecting tests"
+        ) is False
+
+    # ── last_test_output capture from tool results ─────────────────────
+
+    def test_last_test_output_init(self):
+        """Orchestrator initializes last_test_output as empty."""
+        from zhushou.pipeline.orchestrator import PipelineOrchestrator
+
+        class DummyClient:
+            pass
+
+        orch = PipelineOrchestrator(
+            llm_client=DummyClient(),
+            work_dir="/tmp/test_orch",
+        )
+        assert orch.last_test_output == ""
+        assert orch._total_debug_iterations == 0
+
+    def test_max_total_debug_iterations_constant(self):
+        """MAX_TOTAL_DEBUG_ITERATIONS is set to 10."""
+        from zhushou.pipeline.orchestrator import PipelineOrchestrator
+        assert PipelineOrchestrator.MAX_TOTAL_DEBUG_ITERATIONS == 10
+
+    def test_last_test_output_captured_from_tool(self, tmp_path):
+        """When run_command executes a pytest command, its output is captured
+        in orchestrator.last_test_output."""
+        from dataclasses import dataclass, field
+        from zhushou.pipeline.orchestrator import PipelineOrchestrator
+
+        pytest_output = "===== 5 passed in 0.3s ====="
+
+        @dataclass
+        class ToolCallRequest:
+            name: str = "run_command"
+            arguments: str = '{"command": "python -m pytest tests/ -v"}'
+            id: str = "call_0"
+
+        @dataclass
+        class LLMResponse:
+            content: str = ""
+            tool_calls: list = field(default_factory=list)
+
+        call_count = 0
+
+        class MockClient:
+            def chat(self, **kwargs):
+                nonlocal call_count
+                call_count += 1
+                if call_count == 1:
+                    return LLMResponse(
+                        content="Running tests...",
+                        tool_calls=[ToolCallRequest()],
+                    )
+                return LLMResponse(content="Done", tool_calls=[])
+
+        orch = PipelineOrchestrator(
+            llm_client=MockClient(),
+            work_dir=str(tmp_path),
+        )
+
+        # Patch executor to return fake pytest output
+        original_execute = orch.executor.execute
+        def mock_execute(name, args):
+            if name == "run_command":
+                return {"success": True, "output": pytest_output}
+            return original_execute(name, args)
+        orch.executor.execute = mock_execute
+
+        orch._run_stage_with_tools(
+            system_prompt="test", user_prompt="test", temperature=0.0,
+        )
+        assert orch.last_test_output == pytest_output
+
+    def test_last_test_output_not_captured_for_non_pytest(self, tmp_path):
+        """run_command for non-pytest commands does NOT set last_test_output."""
+        from dataclasses import dataclass, field
+        from zhushou.pipeline.orchestrator import PipelineOrchestrator
+
+        @dataclass
+        class ToolCallRequest:
+            name: str = "run_command"
+            arguments: str = '{"command": "ls -la"}'
+            id: str = "call_0"
+
+        @dataclass
+        class LLMResponse:
+            content: str = ""
+            tool_calls: list = field(default_factory=list)
+
+        call_count = 0
+
+        class MockClient:
+            def chat(self, **kwargs):
+                nonlocal call_count
+                call_count += 1
+                if call_count == 1:
+                    return LLMResponse(
+                        content="Listing...",
+                        tool_calls=[ToolCallRequest()],
+                    )
+                return LLMResponse(content="Done", tool_calls=[])
+
+        orch = PipelineOrchestrator(
+            llm_client=MockClient(),
+            work_dir=str(tmp_path),
+        )
+        original_execute = orch.executor.execute
+        def mock_execute(name, args):
+            if name == "run_command":
+                return {"success": True, "output": "file1.py\nfile2.py"}
+            return original_execute(name, args)
+        orch.executor.execute = mock_execute
+
+        orch._run_stage_with_tools(
+            system_prompt="test", user_prompt="test", temperature=0.0,
+        )
+        assert orch.last_test_output == ""
+
+    # ── Debug loop behavior ────────────────────────────────────────────
+
+    def test_debug_loop_skips_when_tests_pass(self, tmp_path):
+        """Debug loop is skipped entirely if tests already passed."""
+        from zhushou.pipeline.orchestrator import PipelineOrchestrator
+
+        class DummyClient:
+            pass
+
+        orch = PipelineOrchestrator(
+            llm_client=DummyClient(),
+            work_dir=str(tmp_path),
+        )
+        orch.context["test_output"] = "===== 10 passed in 1.0s ====="
+        orch._run_debug_loop("test request", 6, 7)
+        assert orch.stats["tests_passed"] == "All passed"
+        assert orch._total_debug_iterations == 0
+
+    def test_debug_loop_stops_on_pass(self, tmp_path):
+        """Debug loop stops when tests pass on attempt 2."""
+        from dataclasses import dataclass, field
+        from zhushou.pipeline.orchestrator import PipelineOrchestrator
+
+        @dataclass
+        class LLMResponse:
+            content: str = ""
+            tool_calls: list = field(default_factory=list)
+
+        @dataclass
+        class ToolCallRequest:
+            name: str = "run_command"
+            arguments: str = '{"command": "python -m pytest tests/ -v"}'
+            id: str = "call_0"
+
+        debug_call_count = 0
+
+        class MockClient:
+            def chat(self, **kwargs):
+                nonlocal debug_call_count
+                debug_call_count += 1
+                # Odd calls: return tool call; Even calls: return done
+                if debug_call_count % 2 == 1:
+                    return LLMResponse(
+                        content="Fixing...",
+                        tool_calls=[ToolCallRequest()],
+                    )
+                return LLMResponse(content="Done", tool_calls=[])
+
+        orch = PipelineOrchestrator(
+            llm_client=MockClient(),
+            work_dir=str(tmp_path),
+        )
+        orch.context["test_output"] = "2 failed"
+
+        attempt_count = [0]
+        original_execute = orch.executor.execute
+        def mock_execute(name, args):
+            if name == "run_command":
+                attempt_count[0] += 1
+                if attempt_count[0] >= 2:
+                    return {"success": True, "output": "5 passed in 0.3s"}
+                return {"success": False, "output": "2 failed, 3 passed"}
+            return original_execute(name, args)
+        orch.executor.execute = mock_execute
+
+        orch._run_debug_loop("test request", 6, 7)
+        assert orch.stats["tests_passed"] == "All passed"
+        assert orch._total_debug_iterations == 2
+
+    def test_debug_loop_exhausts_retries(self, tmp_path):
+        """Debug loop exhausts MAX_DEBUG_RETRIES when tests never pass."""
+        from dataclasses import dataclass, field
+        from zhushou.pipeline.orchestrator import PipelineOrchestrator
+
+        @dataclass
+        class LLMResponse:
+            content: str = ""
+            tool_calls: list = field(default_factory=list)
+
+        @dataclass
+        class ToolCallRequest:
+            name: str = "run_command"
+            arguments: str = '{"command": "python -m pytest tests/ -v"}'
+            id: str = "call_0"
+
+        call_count = 0
+
+        class MockClient:
+            def chat(self, **kwargs):
+                nonlocal call_count
+                call_count += 1
+                if call_count % 2 == 1:
+                    return LLMResponse(
+                        tool_calls=[ToolCallRequest()],
+                    )
+                return LLMResponse(content="Done", tool_calls=[])
+
+        orch = PipelineOrchestrator(
+            llm_client=MockClient(),
+            work_dir=str(tmp_path),
+        )
+        orch.context["test_output"] = "3 failed"
+
+        original_execute = orch.executor.execute
+        def mock_execute(name, args):
+            if name == "run_command":
+                return {"success": False, "output": "3 failed, 2 passed"}
+            return original_execute(name, args)
+        orch.executor.execute = mock_execute
+
+        orch._run_debug_loop("test request", 6, 7)
+        assert orch.stats["tests_passed"] == "Some failures remain"
+        assert orch._total_debug_iterations == orch.MAX_DEBUG_RETRIES
+
+    def test_debug_loop_respects_total_budget(self, tmp_path):
+        """Debug loop stops when total budget is exhausted even if
+        MAX_DEBUG_RETRIES hasn't been reached."""
+        from dataclasses import dataclass, field
+        from zhushou.pipeline.orchestrator import PipelineOrchestrator
+
+        @dataclass
+        class LLMResponse:
+            content: str = ""
+            tool_calls: list = field(default_factory=list)
+
+        class MockClient:
+            def chat(self, **kwargs):
+                return LLMResponse(content="Done", tool_calls=[])
+
+        orch = PipelineOrchestrator(
+            llm_client=MockClient(),
+            work_dir=str(tmp_path),
+        )
+        orch.context["test_output"] = "3 failed"
+        # Pre-exhaust the total budget
+        orch._total_debug_iterations = orch.MAX_TOTAL_DEBUG_ITERATIONS
+
+        orch._run_debug_loop("test request", 6, 7)
+        # Should not have run any attempts
+        assert orch._total_debug_iterations == orch.MAX_TOTAL_DEBUG_ITERATIONS
+
+    # ── Verification -> Debug feedback ─────────────────────────────────
+
+    def test_verify_debug_loop_passes_first_time(self, tmp_path):
+        """If verification finds all tests pass, no re-debug needed."""
+        from dataclasses import dataclass, field
+        from zhushou.pipeline.orchestrator import PipelineOrchestrator
+        from zhushou.pipeline.stages import ALL_STAGES
+
+        @dataclass
+        class LLMResponse:
+            content: str = ""
+            tool_calls: list = field(default_factory=list)
+
+        @dataclass
+        class ToolCallRequest:
+            name: str = "run_command"
+            arguments: str = '{"command": "python -m pytest tests/ -v"}'
+            id: str = "call_0"
+
+        call_count = 0
+
+        class MockClient:
+            def chat(self, **kwargs):
+                nonlocal call_count
+                call_count += 1
+                if call_count == 1:
+                    return LLMResponse(
+                        content="Verifying...",
+                        tool_calls=[ToolCallRequest()],
+                    )
+                return LLMResponse(content="All good", tool_calls=[])
+
+        orch = PipelineOrchestrator(
+            llm_client=MockClient(),
+            work_dir=str(tmp_path),
+        )
+        orch.context["test_output"] = "5 passed"
+
+        original_execute = orch.executor.execute
+        def mock_execute(name, args):
+            if name == "run_command":
+                return {"success": True, "output": "10 passed in 1.0s"}
+            return original_execute(name, args)
+        orch.executor.execute = mock_execute
+
+        verification_stage = ALL_STAGES[6]
+        orch._run_verify_debug_loop(
+            "test request", verification_stage, 7, 7,
+        )
+        assert orch.stats["tests_passed"] == "All passed"
+        assert orch._total_debug_iterations == 0

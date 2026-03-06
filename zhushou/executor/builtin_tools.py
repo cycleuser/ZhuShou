@@ -7,6 +7,7 @@ Handlers accept ``(work_dir: str, args: dict)`` and return
 
 from __future__ import annotations
 
+import ast
 import glob as _glob
 import os
 import re
@@ -33,6 +34,65 @@ def _is_git_protected(path: str) -> bool:
     """Return ``True`` when *path* lives inside a ``.git`` directory."""
     parts = Path(path).parts
     return ".git" in parts
+
+
+def _validate_python_file(abs_path: str) -> list[str]:
+    """Validate a Python file for syntax errors and stub patterns.
+
+    Returns a list of warning strings (empty if file is clean).
+    """
+    warnings: list[str] = []
+
+    try:
+        with open(abs_path, "r", encoding="utf-8") as fh:
+            source = fh.read()
+    except Exception:
+        return warnings
+
+    # 1. Syntax check via ast.parse
+    try:
+        tree = ast.parse(source, filename=abs_path)
+    except SyntaxError as e:
+        line_info = f" on line {e.lineno}" if e.lineno else ""
+        msg = e.msg or "invalid syntax"
+        warnings.append(f"SYNTAX ERROR{line_info}: {msg}")
+        return warnings  # can't do further checks on broken AST
+
+    # 2. Detect stub functions (body is only `pass`, or only a docstring)
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            body = node.body
+            # Skip if the function is just `pass`
+            if len(body) == 1 and isinstance(body[0], ast.Pass):
+                warnings.append(
+                    f"STUB on line {node.lineno}: function '{node.name}' "
+                    f"body is only 'pass' — write real implementation"
+                )
+            # Skip if the body is docstring + pass
+            elif (
+                len(body) == 2
+                and isinstance(body[0], ast.Expr)
+                and isinstance(body[0].value, ast.Constant)
+                and isinstance(body[1], ast.Pass)
+            ):
+                warnings.append(
+                    f"STUB on line {node.lineno}: function '{node.name}' "
+                    f"has only a docstring and 'pass' — write real implementation"
+                )
+            # Detect `# TODO` / `# Implementation` as sole body (comment-only
+            # functions still parse as having just `pass` or `Expr(Constant)`)
+            elif len(body) == 1 and isinstance(body[0], ast.Expr):
+                val = body[0].value
+                if isinstance(val, ast.Constant) and isinstance(val.value, str):
+                    s = val.value
+                    if isinstance(s, str) and s.strip().startswith(("#", "TODO", "Implementation")):
+                        warnings.append(
+                            f"STUB on line {node.lineno}: function "
+                            f"'{node.name}' has only a comment string — "
+                            f"write real implementation"
+                        )
+
+    return warnings
 
 
 # ───────────────────────────────────────────────────────────────────
@@ -112,7 +172,21 @@ def _handle_write_file(work_dir: str, args: dict[str, Any]) -> dict[str, Any]:
         fh.write(content)
         if content and not content.endswith("\n"):
             fh.write("\n")
-    return {"success": True, "output": f"File written: {path}"}
+
+    output = f"File written: {path}"
+
+    # Validate Python files immediately after writing
+    if path.endswith(".py"):
+        warnings = _validate_python_file(abs_path)
+        if warnings:
+            output += "\n\nWARNING — issues detected, fix them NOW:\n"
+            output += "\n".join(f"  - {w}" for w in warnings)
+            output += (
+                "\n\nYou MUST rewrite this file to fix the above issues. "
+                "Use write_file again with corrected content."
+            )
+
+    return {"success": True, "output": output}
 
 
 # ───────────────────────────────────────────────────────────────────
@@ -166,7 +240,17 @@ def _handle_edit_file(work_dir: str, args: dict[str, Any]) -> dict[str, Any]:
     updated = content.replace(old_text, new_text, 1)
     with open(abs_path, "w", encoding="utf-8") as fh:
         fh.write(updated)
-    return {"success": True, "output": f"Edited {path}: replaced 1 occurrence."}
+
+    output = f"Edited {path}: replaced 1 occurrence."
+
+    # Validate Python files immediately after editing
+    if path.endswith(".py"):
+        warnings = _validate_python_file(abs_path)
+        if warnings:
+            output += "\n\nWARNING — issues detected after edit:\n"
+            output += "\n".join(f"  - {w}" for w in warnings)
+
+    return {"success": True, "output": output}
 
 
 # ───────────────────────────────────────────────────────────────────
@@ -617,6 +701,152 @@ def _handle_git_commit(work_dir: str, args: dict[str, Any]) -> dict[str, Any]:
         return {"success": False, "output": f"git commit error: {exc}"}
 
 
+# ───────────────────────────────────────────────────────────────────
+# scaffold_project
+# ───────────────────────────────────────────────────────────────────
+
+SCAFFOLD_PROJECT_SCHEMA: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "scaffold_project",
+        "description": (
+            "Generate a complete Python package scaffold from templates. "
+            "Creates __init__.py, __main__.py, api.py, cli.py, tools.py, "
+            "tests/conftest.py, and an empty tests/__init__.py. "
+            "Use this ONCE at the start of implementation to set up the "
+            "deterministic boilerplate; then use write_file / edit_file "
+            "to fill in project-specific logic."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "package_name": {
+                    "type": "string",
+                    "description": (
+                        "Python-importable package name (lowercase, "
+                        "underscores OK, e.g. 'gomoku' or 'my_tool')."
+                    ),
+                },
+                "description": {
+                    "type": "string",
+                    "description": "One-line project description.",
+                },
+            },
+            "required": ["package_name", "description"],
+        },
+    },
+}
+
+
+def _handle_scaffold_project(work_dir: str, args: dict[str, Any]) -> dict[str, Any]:
+    pkg = args.get("package_name", "").strip()
+    desc = args.get("description", "").strip()
+
+    if not pkg:
+        return {"success": False, "output": "Missing 'package_name' argument."}
+    if not desc:
+        return {"success": False, "output": "Missing 'description' argument."}
+
+    # Validate package name
+    if not re.match(r'^[a-z][a-z0-9_]*$', pkg):
+        return {
+            "success": False,
+            "output": (
+                f"Invalid package_name '{pkg}': must start with a lowercase "
+                "letter and contain only lowercase letters, digits, and "
+                "underscores."
+            ),
+        }
+
+    # Locate templates directory (sibling of executor/)
+    templates_dir = Path(__file__).resolve().parent.parent / "templates"
+
+    template_files = {
+        "__init__.py": "__init__.py.tpl",
+        "__main__.py": "__main__.py.tpl",
+        "api.py": "api.py.tpl",
+        "cli.py": "cli.py.tpl",
+        "tools.py": "tools.py.tpl",
+    }
+
+    pkg_dir = os.path.join(os.path.abspath(work_dir), pkg)
+    tests_dir = os.path.join(os.path.abspath(work_dir), "tests")
+
+    created: list[str] = []
+    errors: list[str] = []
+
+    # Create package directory
+    os.makedirs(pkg_dir, exist_ok=True)
+
+    # Render and write each template
+    for target_name, tpl_name in template_files.items():
+        tpl_path = templates_dir / tpl_name
+        if not tpl_path.is_file():
+            errors.append(f"Template not found: {tpl_name}")
+            continue
+        content = tpl_path.read_text(encoding="utf-8")
+        content = content.replace("{{package_name}}", pkg)
+        content = content.replace("{{description}}", desc)
+        out_path = os.path.join(pkg_dir, target_name)
+        with open(out_path, "w", encoding="utf-8") as fh:
+            fh.write(content)
+        created.append(f"{pkg}/{target_name}")
+
+    # Create tests/ directory with conftest.py and __init__.py
+    os.makedirs(tests_dir, exist_ok=True)
+
+    conftest_tpl = templates_dir / "conftest.py.tpl"
+    if conftest_tpl.is_file():
+        content = conftest_tpl.read_text(encoding="utf-8")
+        content = content.replace("{{package_name}}", pkg)
+        conftest_path = os.path.join(tests_dir, "conftest.py")
+        with open(conftest_path, "w", encoding="utf-8") as fh:
+            fh.write(content)
+        created.append("tests/conftest.py")
+
+    init_path = os.path.join(tests_dir, "__init__.py")
+    with open(init_path, "w", encoding="utf-8") as fh:
+        fh.write("")
+    created.append("tests/__init__.py")
+
+    # Create docs/ directory
+    docs_dir = os.path.join(os.path.abspath(work_dir), "docs")
+    os.makedirs(docs_dir, exist_ok=True)
+
+    if errors:
+        return {
+            "success": False,
+            "output": (
+                f"Scaffold partially created with errors:\n"
+                + "\n".join(f"  - {e}" for e in errors)
+                + "\n\nFiles created:\n"
+                + "\n".join(f"  - {f}" for f in created)
+            ),
+        }
+
+    output = (
+        f"Project scaffold created for '{pkg}'.\n\n"
+        f"Files created:\n"
+        + "\n".join(f"  - {f}" for f in created)
+        + "\n\n"
+        + "Directories created:\n"
+        + f"  - {pkg}/\n"
+        + "  - tests/\n"
+        + "  - docs/\n\n"
+        + "Next steps:\n"
+        + f"  1. Create {pkg}/core.py with your core business logic\n"
+        + f"  2. Edit {pkg}/api.py — add API wrapper functions that "
+        + "return ToolResult\n"
+        + f"  3. Edit {pkg}/cli.py — add project-specific arguments "
+        + "and dispatch logic\n"
+        + f"  4. Edit {pkg}/tools.py — add tool schemas and dispatch "
+        + "cases\n"
+        + f"  5. Edit {pkg}/__init__.py — update __all__ with your "
+        + "public API symbols"
+    )
+    return {"success": True, "output": output}
+
+
 # ===================================================================
 # Registry
 # ===================================================================
@@ -633,6 +863,7 @@ ALL_TOOLS: list[dict[str, Any]] = [
     PYTHON_EXEC_SCHEMA,
     GIT_STATUS_SCHEMA,
     GIT_COMMIT_SCHEMA,
+    SCAFFOLD_PROJECT_SCHEMA,
 ]
 
 TOOL_HANDLERS: dict[str, Callable[[str, dict[str, Any]], dict[str, Any]]] = {
@@ -647,4 +878,5 @@ TOOL_HANDLERS: dict[str, Callable[[str, dict[str, Any]], dict[str, Any]]] = {
     "python_exec": _handle_python_exec,
     "git_status": _handle_git_status,
     "git_commit": _handle_git_commit,
+    "scaffold_project": _handle_scaffold_project,
 }

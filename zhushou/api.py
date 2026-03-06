@@ -125,8 +125,9 @@ def run_pipeline(
     api_key: str = "",
     base_url: str = "",
     proxy: str = "",
+    full: bool = False,
 ) -> ToolResult:
-    """Run the 7-stage autonomous coding pipeline.
+    """Run the 7-stage (or 9-stage with full=True) autonomous coding pipeline.
 
     Parameters
     ----------
@@ -144,6 +145,8 @@ def run_pipeline(
         Custom API endpoint URL.
     proxy : str
         HTTP/HTTPS proxy URL. Empty string disables proxy.
+    full : bool
+        If True, run additional documentation and packaging stages (9 total).
 
     Returns
     -------
@@ -173,6 +176,7 @@ def run_pipeline(
             llm_client=client,
             work_dir=output_dir,
             python_path=python_path,
+            full_mode=full,
         )
         stats = orchestrator.run(request)
 

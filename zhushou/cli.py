@@ -105,12 +105,17 @@ examples:
     # pipeline subcommand
     pipeline_parser = subparsers.add_parser(
         "pipeline",
-        help="Run the 7-stage autonomous coding pipeline",
+        help="Run the autonomous coding pipeline (7 stages; 9 with --full)",
         parents=[common],
     )
     pipeline_parser.add_argument(
         "request",
         help="Project description or coding request",
+    )
+    pipeline_parser.add_argument(
+        "--full",
+        action="store_true",
+        help="Run additional documentation and packaging stages (9 stages total)",
     )
 
     # models subcommand
@@ -232,6 +237,7 @@ def _cmd_pipeline(args: argparse.Namespace) -> None:
         api_key=args.api_key,
         base_url=args.base_url,
         proxy=args.proxy,
+        full=args.full,
     )
 
     if args.json_output:
