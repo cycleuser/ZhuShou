@@ -59,6 +59,12 @@ def _make_common_parser() -> argparse.ArgumentParser:
         default="",
         help="HTTP/HTTPS proxy URL (default: disabled, ignores system proxy env vars)",
     )
+    common.add_argument(
+        "--timeout",
+        type=int,
+        default=300,
+        help="LLM request timeout in seconds (default: 300)",
+    )
     return common
 
 
@@ -117,6 +123,12 @@ examples:
         action="store_true",
         help="Run additional documentation and packaging stages (9 stages total)",
     )
+    pipeline_parser.add_argument(
+        "--kb",
+        nargs="*",
+        default=None,
+        help="Enable knowledge base context (e.g. --kb numpy flask, or --kb auto)",
+    )
 
     # models subcommand
     subparsers.add_parser(
@@ -131,6 +143,24 @@ examples:
         help="Show or edit configuration",
         parents=[common],
     )
+
+    # kb subcommand group
+    kb_parser = subparsers.add_parser(
+        "kb",
+        help="Knowledge base management (list, download, index, search, cheatsheet)",
+        parents=[common],
+    )
+    kb_subs = kb_parser.add_subparsers(dest="kb_command")
+    kb_subs.add_parser("list", help="List available knowledge base sources")
+    kb_dl = kb_subs.add_parser("download", help="Download official docs for a source")
+    kb_dl.add_argument("source", help="Source name (e.g. numpy, flask)")
+    kb_idx = kb_subs.add_parser("index", help="Index downloaded docs into vector DB")
+    kb_idx.add_argument("source", help="Source name (e.g. numpy, flask)")
+    kb_search = kb_subs.add_parser("search", help="Search indexed knowledge base")
+    kb_search.add_argument("query", help="Search query")
+    kb_search.add_argument("--source", nargs="*", default=None, help="Limit to specific sources")
+    kb_cs = kb_subs.add_parser("cheatsheet", help="Display built-in cheatsheet")
+    kb_cs.add_argument("name", help="Framework name (e.g. numpy, flask)")
 
     args = parser.parse_args(argv)
 
@@ -150,6 +180,8 @@ examples:
         _cmd_models(args)
     elif command == "config":
         _cmd_config(args)
+    elif command == "kb":
+        _cmd_kb(args)
     else:
         # No subcommand -> interactive REPL
         _cmd_interactive(args)
@@ -175,6 +207,8 @@ def _resolve_model(args: argparse.Namespace) -> str:
         kwargs["api_key"] = args.api_key
     if args.proxy:
         kwargs["proxy"] = args.proxy
+    if hasattr(args, "timeout") and args.timeout != 300:
+        kwargs["timeout"] = args.timeout
 
     client = LLMClientFactory.create_client(args.provider, **kwargs)
 
@@ -211,6 +245,7 @@ def _cmd_chat(args: argparse.Namespace) -> None:
         base_url=args.base_url,
         work_dir=args.output or ".",
         proxy=args.proxy,
+        timeout=args.timeout,
     )
 
     if args.json_output:
@@ -238,6 +273,8 @@ def _cmd_pipeline(args: argparse.Namespace) -> None:
         base_url=args.base_url,
         proxy=args.proxy,
         full=args.full,
+        timeout=args.timeout,
+        kb=args.kb,
     )
 
     if args.json_output:
@@ -306,6 +343,73 @@ def _cmd_config(args: argparse.Namespace) -> None:
             print("  (no configuration set)")
 
 
+def _cmd_kb(args: argparse.Namespace) -> None:
+    """Handle the kb subcommand group."""
+    from zhushou.knowledge.kb_manager import KBManager
+    from zhushou.knowledge.kb_config import KBConfig
+
+    kb = KBManager(KBConfig())
+    sub = getattr(args, "kb_command", None)
+
+    if sub == "list":
+        sources = kb.list_sources()
+        if args.json_output:
+            print(json.dumps(sources, ensure_ascii=False, indent=2))
+        else:
+            fmt = "{:<14} {:<16} {:>5}  {:>5}  {:>7}  {:>6}"
+            print(fmt.format("Key", "Name", "Down", "Index", "Chunks", "Sheet"))
+            print("-" * 72)
+            for s in sources:
+                print(fmt.format(
+                    s["key"], s["name"],
+                    "yes" if s["downloaded"] else "-",
+                    "yes" if s["indexed"] else "-",
+                    str(s["index_chunks"]) if s["indexed"] else "-",
+                    "yes" if s["cheatsheet"] else "-",
+                ))
+    elif sub == "download":
+        saved, errors = kb.download(args.source)
+        if args.json_output:
+            print(json.dumps({"saved": saved, "errors": errors}, ensure_ascii=False))
+        else:
+            print(f"Downloaded {saved} file(s) for '{args.source}'")
+            for e in errors:
+                print(f"  Error: {e}", file=sys.stderr)
+    elif sub == "index":
+        chunks, files = kb.index(args.source)
+        if args.json_output:
+            print(json.dumps({"chunks": chunks, "files": files}, ensure_ascii=False))
+        else:
+            print(f"Indexed {chunks} chunks from {files} file(s) for '{args.source}'")
+    elif sub == "search":
+        results = kb.search(args.query, collections=args.source)
+        if args.json_output:
+            print(json.dumps(results, ensure_ascii=False, indent=2))
+        else:
+            if not results:
+                print("No results found.")
+            else:
+                for i, hit in enumerate(results, 1):
+                    meta = hit.get("metadata", {})
+                    src = meta.get("source", "?")
+                    fname = meta.get("file", "?")
+                    dist = hit.get("distance", 0)
+                    print(f"\n--- Result {i} [{src}/{fname}] (dist: {dist:.3f}) ---")
+                    print(hit.get("text", "")[:500])
+    elif sub == "cheatsheet":
+        cs = kb.get_cheatsheet(args.name)
+        if cs:
+            print(cs)
+        else:
+            available = ", ".join(sorted(
+                s["key"] for s in kb.list_sources() if s["cheatsheet"]
+            ))
+            print(f"No cheatsheet for '{args.name}'. Available: {available}")
+    else:
+        print("Usage: zhushou kb {list|download|index|search|cheatsheet}")
+        print("Run 'zhushou kb --help' for details.")
+
+
 def _cmd_interactive(args: argparse.Namespace) -> None:
     """Launch the interactive REPL."""
     try:
@@ -329,6 +433,8 @@ def _cmd_interactive(args: argparse.Namespace) -> None:
             kwargs["api_key"] = args.api_key
         if args.proxy:
             kwargs["proxy"] = args.proxy
+        if hasattr(args, "timeout") and args.timeout != 300:
+            kwargs["timeout"] = args.timeout
         kwargs["model"] = model
 
         client = LLMClientFactory.create_client(args.provider, **kwargs)

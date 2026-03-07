@@ -180,6 +180,48 @@ STAGE_TASKS = Stage(
 )
 
 
+# ── Stage 3.5: Function-Level Design ─────────────────────────────────
+
+STAGE_FUNCTION_DESIGN = Stage(
+    name="Function Design",
+    temperature=0.3,
+    system_prompt=(
+        "You are a Software Designer.  Your job is to produce a detailed "
+        "function-level design document that lists EVERY function and class "
+        "that will be implemented.\n\n"
+
+        "Given the requirements, architecture, and task list, produce a "
+        "document listing every function and method with its signature, "
+        "purpose, and dependencies.\n\n"
+
+        "═══ OUTPUT FORMAT ═══\n\n"
+        "Use the write_file tool to create docs/function_design.md with "
+        "this EXACT format:\n\n"
+
+        "## File: packagename/core.py\n\n"
+        "### class ClassName\n"
+        "- `__init__(self, param: type)` -- Initialize with description\n"
+        "- `method(self, a: type) -> return_type` -- What it does\n"
+        "  - depends_on: other_function\n\n"
+        "### function standalone_func\n"
+        "- `standalone_func(param: type) -> return_type` -- What it does\n"
+        "  - depends_on: (none)\n\n"
+
+        "Repeat ## File: ... section for every .py file.\n\n"
+
+        "═══ RULES ═══\n\n"
+        "- List EVERY function and method — nothing may be omitted\n"
+        "- One line per function: backtick-wrapped signature + description\n"
+        "- For classes: list __init__ first, then all methods\n"
+        "- Use 'depends_on:' to note which other functions are called\n"
+        "- Keep descriptions to one short sentence\n"
+        "- Order files by dependency (implement dependencies first)\n"
+        "- Do NOT include test files — only source code\n"
+        "- Do NOT write any implementation code — signatures only"
+    ),
+)
+
+
 # ── Stage 4: Implementation ───────────────────────────────────────────
 
 STAGE_IMPLEMENTATION = Stage(
@@ -543,19 +585,20 @@ STAGE_PACKAGING = Stage(
 # ── Stage lists ───────────────────────────────────────────────────────
 
 ALL_STAGES: list[Stage] = [
-    STAGE_REQUIREMENTS,
-    STAGE_ARCHITECTURE,
-    STAGE_TASKS,
-    STAGE_IMPLEMENTATION,
-    STAGE_TESTING,
-    STAGE_DEBUGGING,  # handled specially by orchestrator (debug loop)
-    STAGE_VERIFICATION,
+    STAGE_REQUIREMENTS,       # 0
+    STAGE_ARCHITECTURE,       # 1
+    STAGE_TASKS,              # 2
+    STAGE_FUNCTION_DESIGN,    # 3 (new)
+    STAGE_IMPLEMENTATION,     # 4 (was 3)
+    STAGE_TESTING,            # 5 (was 4)
+    STAGE_DEBUGGING,          # 6 (was 5) — handled specially (debug loop)
+    STAGE_VERIFICATION,       # 7 (was 6)
 ]
 
 FULL_STAGES: list[Stage] = [
     *ALL_STAGES,
-    STAGE_DOCUMENTATION,
-    STAGE_PACKAGING,
+    STAGE_DOCUMENTATION,      # 8 (was 7)
+    STAGE_PACKAGING,          # 9 (was 8)
 ]
 
 
@@ -574,8 +617,10 @@ def build_user_prompt(stage_index: int, user_request: str, context: dict[str, st
     req = context.get("requirements", "")
     arch = context.get("architecture", "")
     tasks = context.get("tasks", "")
+    func_design = context.get("function_design", "")
     impl_summary = context.get("implementation", "")
     test_output = context.get("test_output", "")
+    kb_context = context.get("kb_context", "")
 
     if stage_index == 0:
         # Requirements: just the user request
@@ -602,12 +647,24 @@ def build_user_prompt(stage_index: int, user_request: str, context: dict[str, st
         )
 
     elif stage_index == 3:
-        # Implementation: requirements + architecture + tasks
+        # Function design: tasks + architecture
         return (
+            f"Project request: {user_request}\n\n"
+            f"## Architecture\n{arch}\n\n"
+            f"## Implementation Tasks\n{tasks}\n\n"
+            "Read the architecture and tasks above.  List EVERY function "
+            "and class with its signature, purpose, and dependencies.  "
+            "Write the result to docs/function_design.md."
+        )
+
+    elif stage_index == 4:
+        # Implementation: requirements + architecture + tasks + function design
+        prompt = (
             f"Project request: {user_request}\n\n"
             f"## Requirements\n{req}\n\n"
             f"## Architecture\n{arch}\n\n"
             f"## Implementation Tasks\n{tasks}\n\n"
+            f"## Function Design\n{func_design}\n\n"
             "The package scaffold has already been created by "
             "scaffold_project in the previous stage.  The following "
             "files already exist with boilerplate code:\n"
@@ -623,8 +680,11 @@ def build_user_prompt(stage_index: int, user_request: str, context: dict[str, st
             "project-specific code\n"
             "3. No stubs, no pass, no TODO — write REAL code."
         )
+        if kb_context:
+            prompt += f"\n\n## Reference Documentation\n{kb_context}"
+        return prompt
 
-    elif stage_index == 4:
+    elif stage_index == 5:
         # Testing: all prior context + summary of implemented files
         return (
             f"Project request: {user_request}\n\n"
@@ -633,7 +693,7 @@ def build_user_prompt(stage_index: int, user_request: str, context: dict[str, st
             "Write the 6-class test suite and run it."
         )
 
-    elif stage_index == 5:
+    elif stage_index == 6:
         # Debugging: include test failure output
         return (
             "The tests produced the following output:\n\n"
@@ -644,7 +704,7 @@ def build_user_prompt(stage_index: int, user_request: str, context: dict[str, st
             "it with real logic."
         )
 
-    elif stage_index == 6:
+    elif stage_index == 7:
         # Verification: summary
         return (
             f"Project request: {user_request}\n\n"
@@ -659,7 +719,7 @@ def build_user_prompt(stage_index: int, user_request: str, context: dict[str, st
             "7. Write a final report to docs/report.md"
         )
 
-    elif stage_index == 7:
+    elif stage_index == 8:
         # Documentation (--full mode)
         return (
             f"Project request: {user_request}\n\n"
@@ -670,7 +730,7 @@ def build_user_prompt(stage_index: int, user_request: str, context: dict[str, st
             "requirements.txt for this project."
         )
 
-    elif stage_index == 8:
+    elif stage_index == 9:
         # Packaging (--full mode)
         return (
             f"Project request: {user_request}\n\n"

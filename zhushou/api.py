@@ -38,6 +38,7 @@ def chat(
     work_dir: str = ".",
     persona_dir: str = "",
     proxy: str = "",
+    timeout: int = 300,
 ) -> ToolResult:
     """Send a message to the AI assistant and get a response.
 
@@ -84,6 +85,8 @@ def chat(
             kwargs["model"] = model
         if proxy:
             kwargs["proxy"] = proxy
+        if timeout != 300:
+            kwargs["timeout"] = timeout
 
         client = LLMClientFactory.create_client(provider, **kwargs)
         executor = ToolExecutor(work_dir=work_dir)
@@ -126,6 +129,8 @@ def run_pipeline(
     base_url: str = "",
     proxy: str = "",
     full: bool = False,
+    timeout: int = 300,
+    kb: list[str] | None = None,
 ) -> ToolResult:
     """Run the 7-stage (or 9-stage with full=True) autonomous coding pipeline.
 
@@ -147,6 +152,9 @@ def run_pipeline(
         HTTP/HTTPS proxy URL. Empty string disables proxy.
     full : bool
         If True, run additional documentation and packaging stages (9 total).
+    kb : list[str] | None
+        Knowledge base sources to use (e.g. ["numpy", "flask"]).
+        None disables KB context injection.
 
     Returns
     -------
@@ -168,6 +176,8 @@ def run_pipeline(
             kwargs["model"] = model
         if proxy:
             kwargs["proxy"] = proxy
+        if timeout != 300:
+            kwargs["timeout"] = timeout
 
         client = LLMClientFactory.create_client(provider, **kwargs)
         python_path = find_python()
@@ -177,6 +187,7 @@ def run_pipeline(
             work_dir=output_dir,
             python_path=python_path,
             full_mode=full,
+            kb_collections=kb,
         )
         stats = orchestrator.run(request)
 
@@ -271,5 +282,60 @@ def search_pypi(
                 "version": __version__,
             },
         )
+    except Exception as e:
+        return ToolResult(success=False, error=str(e))
+
+
+# ── Knowledge Base API ────────────────────────────────────────────────
+
+def kb_list(**kwargs: Any) -> ToolResult:
+    """List all available knowledge base sources with status."""
+    try:
+        from zhushou.knowledge.kb_manager import KBManager
+
+        mgr = KBManager()
+        return ToolResult(success=True, data=mgr.list_sources())
+    except Exception as e:
+        return ToolResult(success=False, error=str(e))
+
+
+def kb_download(source: str, **kwargs: Any) -> ToolResult:
+    """Download official docs for a knowledge base source."""
+    try:
+        from zhushou.knowledge.kb_manager import KBManager
+
+        mgr = KBManager()
+        saved, errors = mgr.download(source)
+        return ToolResult(
+            success=len(errors) == 0,
+            data={"saved": saved, "errors": errors},
+        )
+    except Exception as e:
+        return ToolResult(success=False, error=str(e))
+
+
+def kb_index(source: str, **kwargs: Any) -> ToolResult:
+    """Index downloaded docs for a knowledge base source."""
+    try:
+        from zhushou.knowledge.kb_manager import KBManager
+
+        mgr = KBManager()
+        chunks, files = mgr.index(source)
+        return ToolResult(
+            success=files > 0,
+            data={"chunks": chunks, "files": files},
+        )
+    except Exception as e:
+        return ToolResult(success=False, error=str(e))
+
+
+def kb_search(query: str, *, sources: list[str] | None = None, **kwargs: Any) -> ToolResult:
+    """Search the indexed knowledge base."""
+    try:
+        from zhushou.knowledge.kb_manager import KBManager
+
+        mgr = KBManager()
+        results = mgr.search(query, collections=sources)
+        return ToolResult(success=True, data=results)
     except Exception as e:
         return ToolResult(success=False, error=str(e))

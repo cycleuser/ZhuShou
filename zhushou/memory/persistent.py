@@ -99,3 +99,19 @@ class PersistentMemory:
 
     def __repr__(self) -> str:
         return f"PersistentMemory(path={self._path!r}, keys={len(self._data)})"
+
+    # ------------------------------------------------------------------
+    # Pipeline session helpers
+    # ------------------------------------------------------------------
+
+    def set_pipeline(self, session_key: str, data: Any) -> None:
+        """Store pipeline session data under a namespaced key."""
+        self.set(f"pipeline:{session_key}", data)
+
+    def get_pipeline(self, session_key: str) -> Any:
+        """Retrieve pipeline session data.  Returns ``None`` if absent."""
+        return self.get(f"pipeline:{session_key}")
+
+    def clear_pipeline(self, session_key: str) -> None:
+        """Remove pipeline session data."""
+        self.delete(f"pipeline:{session_key}")

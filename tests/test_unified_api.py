@@ -1112,15 +1112,17 @@ class TestDocumentedCLIIntegration:
 
     def test_version_short(self):
         """README: zhushou -V"""
+        from zhushou import __version__
         r = self._run_cli("-V")
         assert r.returncode == 0
-        assert "0.1.0" in r.stdout
+        assert __version__ in r.stdout
 
     def test_version_long(self):
         """README: zhushou --version"""
+        from zhushou import __version__
         r = self._run_cli("--version")
         assert r.returncode == 0
-        assert "0.1.0" in r.stdout
+        assert __version__ in r.stdout
 
     def test_config_shows_directory(self):
         """README: zhushou config"""
@@ -1587,13 +1589,13 @@ class TestToolResultDictAccess:
 class TestPipelineFullFlag:
     """Tests for the --full pipeline flag and FULL_STAGES stage list."""
 
-    def test_stages_all_has_seven(self):
+    def test_stages_all_has_eight(self):
         from zhushou.pipeline.stages import ALL_STAGES
-        assert len(ALL_STAGES) == 7
+        assert len(ALL_STAGES) == 8
 
-    def test_stages_full_has_nine(self):
+    def test_stages_full_has_ten(self):
         from zhushou.pipeline.stages import FULL_STAGES
-        assert len(FULL_STAGES) == 9
+        assert len(FULL_STAGES) == 10
 
     def test_full_stages_starts_with_all_stages(self):
         from zhushou.pipeline.stages import ALL_STAGES, FULL_STAGES
@@ -1602,8 +1604,8 @@ class TestPipelineFullFlag:
 
     def test_full_stages_extra_names(self):
         from zhushou.pipeline.stages import FULL_STAGES
-        assert FULL_STAGES[7].name == "Documentation"
-        assert FULL_STAGES[8].name == "Packaging"
+        assert FULL_STAGES[8].name == "Documentation"
+        assert FULL_STAGES[9].name == "Packaging"
 
     def test_pipeline_help_has_full_flag(self):
         r = subprocess.run(
@@ -1634,19 +1636,19 @@ class TestPipelineFullFlag:
         from zhushou.api import run_pipeline
         assert "full" in inspect.signature(run_pipeline).parameters
 
-    def test_build_user_prompt_stage7(self):
-        from zhushou.pipeline.stages import build_user_prompt
-        ctx = {"requirements": "req", "architecture": "arch",
-               "implementation": "impl"}
-        prompt = build_user_prompt(7, "test project", ctx)
-        assert "README.md" in prompt
-        assert "README_CN.md" in prompt
-
     def test_build_user_prompt_stage8(self):
         from zhushou.pipeline.stages import build_user_prompt
         ctx = {"requirements": "req", "architecture": "arch",
                "implementation": "impl"}
         prompt = build_user_prompt(8, "test project", ctx)
+        assert "README.md" in prompt
+        assert "README_CN.md" in prompt
+
+    def test_build_user_prompt_stage9(self):
+        from zhushou.pipeline.stages import build_user_prompt
+        ctx = {"requirements": "req", "architecture": "arch",
+               "implementation": "impl"}
+        prompt = build_user_prompt(9, "test project", ctx)
         assert "pyproject.toml" in prompt
         assert "upload_pypi" in prompt
 
@@ -2764,3 +2766,869 @@ class TestPipelineIterativeDebug:
         )
         assert orch.stats["tests_passed"] == "All passed"
         assert orch._total_debug_iterations == 0
+
+
+# ===========================================================================
+# Small model resilience: timeout, retries, per-file implementation
+# ===========================================================================
+
+def _parse_cli_args(argv: list[str]) -> "argparse.Namespace":
+    """Parse CLI arguments without executing any command.
+
+    Replicates the parser structure from ``zhushou.cli.main`` so that
+    tests can verify flag parsing in-process.
+    """
+    import argparse as _ap
+
+    from zhushou.cli import _make_common_parser
+
+    common = _make_common_parser()
+    parser = _ap.ArgumentParser(prog="zhushou", parents=[common])
+    subs = parser.add_subparsers(dest="command")
+
+    chat_p = subs.add_parser("chat", parents=[common])
+    chat_p.add_argument("message", nargs="?", default="")
+
+    pipe_p = subs.add_parser("pipeline", parents=[common])
+    pipe_p.add_argument("request")
+    pipe_p.add_argument("--full", action="store_true")
+
+    subs.add_parser("models", parents=[common])
+    subs.add_parser("config", parents=[common])
+
+    return parser.parse_args(argv)
+
+
+class TestSmallModelResilience:
+    """Tests for configurable timeout, increased retries, and per-file
+    implementation splitting."""
+
+    # ── --timeout CLI flag ─────────────────────────────────────────────
+
+    def test_timeout_cli_flag_exists(self):
+        """--timeout flag appears in pipeline help output."""
+        r = subprocess.run(
+            [sys.executable, "-m", "zhushou", "pipeline", "--help"],
+            capture_output=True, text=True, timeout=15,
+        )
+        assert "--timeout" in r.stdout
+
+    def test_timeout_cli_flag_parses(self):
+        """--timeout 600 is parsed correctly."""
+        args = _parse_cli_args(["pipeline", "test", "--timeout", "600"])
+        assert args.timeout == 600
+
+    def test_timeout_default_300(self):
+        """Default timeout is 300 when not specified."""
+        args = _parse_cli_args(["pipeline", "test"])
+        assert args.timeout == 300
+
+    def test_timeout_on_all_subcommands(self):
+        """--timeout flag is available on chat and pipeline subcommands."""
+        for subcmd in ["chat", "pipeline"]:
+            r = subprocess.run(
+                [sys.executable, "-m", "zhushou", subcmd, "--help"],
+                capture_output=True, text=True, timeout=15,
+            )
+            assert "--timeout" in r.stdout, f"--timeout missing from {subcmd} help"
+
+    # ── API and client timeout ─────────────────────────────────────────
+
+    def test_run_pipeline_accepts_timeout(self):
+        """run_pipeline() accepts timeout parameter."""
+        import inspect
+        from zhushou.api import run_pipeline
+        sig = inspect.signature(run_pipeline)
+        assert "timeout" in sig.parameters
+        assert sig.parameters["timeout"].default == 300
+
+    def test_chat_accepts_timeout(self):
+        """chat() accepts timeout parameter."""
+        import inspect
+        from zhushou.api import chat
+        sig = inspect.signature(chat)
+        assert "timeout" in sig.parameters
+        assert sig.parameters["timeout"].default == 300
+
+    def test_ollama_client_accepts_timeout(self):
+        """OllamaLLMClient accepts timeout param and uses it."""
+        from zhushou.llm.ollama_client import OllamaLLMClient
+        client = OllamaLLMClient(timeout=600)
+        assert client._timeout.read == 600.0
+        assert client._timeout.connect == 10.0
+
+    def test_ollama_default_timeout(self):
+        """Default OllamaLLMClient uses 300s read timeout."""
+        from zhushou.llm.ollama_client import OllamaLLMClient
+        client = OllamaLLMClient()
+        assert client._timeout.read == 300.0
+
+    # ── Retries ────────────────────────────────────────────────────────
+
+    def test_retry_count_increased(self):
+        """_MAX_RETRIES is now 5."""
+        from zhushou.llm.ollama_client import _MAX_RETRIES
+        assert _MAX_RETRIES == 5
+
+    def test_retry_backoff_base_increased(self):
+        """_RETRY_BACKOFF_BASE is now 3.0."""
+        from zhushou.llm.ollama_client import _RETRY_BACKOFF_BASE
+        assert _RETRY_BACKOFF_BASE == 3.0
+
+    # ── Per-file implementation ────────────────────────────────────────
+
+    def test_parse_task_files_file_colon(self):
+        """_parse_task_files extracts '- File: path.py' patterns."""
+        from zhushou.pipeline.orchestrator import PipelineOrchestrator
+        md = (
+            "## Task 1\n"
+            "- File: calculator/core.py\n"
+            "- Description: Core logic\n\n"
+            "## Task 2\n"
+            "- File: calculator/api.py\n"
+            "- Description: API\n"
+        )
+        files = PipelineOrchestrator._parse_task_files(md)
+        assert "calculator/core.py" in files
+        assert "calculator/api.py" in files
+
+    def test_parse_task_files_heading(self):
+        """_parse_task_files extracts '## Task N: path.py' patterns."""
+        from zhushou.pipeline.orchestrator import PipelineOrchestrator
+        md = (
+            "## Task 1: calculator/core.py\n"
+            "Implement the core logic.\n\n"
+            "## Task 2: calculator/api.py\n"
+            "Implement the API.\n"
+        )
+        files = PipelineOrchestrator._parse_task_files(md)
+        assert "calculator/core.py" in files
+        assert "calculator/api.py" in files
+
+    def test_parse_task_files_numbered_list(self):
+        """_parse_task_files extracts '1. path.py' patterns."""
+        from zhushou.pipeline.orchestrator import PipelineOrchestrator
+        md = (
+            "1. calculator/core.py\n"
+            "2. calculator/api.py\n"
+            "3. calculator/cli.py\n"
+        )
+        files = PipelineOrchestrator._parse_task_files(md)
+        assert len(files) == 3
+        assert "calculator/cli.py" in files
+
+    def test_parse_task_files_deduplicates(self):
+        """_parse_task_files returns unique paths even if repeated."""
+        from zhushou.pipeline.orchestrator import PipelineOrchestrator
+        md = (
+            "- File: calculator/core.py\n"
+            "## Task 1: calculator/core.py\n"
+            "1. calculator/core.py\n"
+        )
+        files = PipelineOrchestrator._parse_task_files(md)
+        assert files.count("calculator/core.py") == 1
+
+    def test_parse_task_files_empty_returns_empty(self):
+        """_parse_task_files returns empty list for non-matching input."""
+        from zhushou.pipeline.orchestrator import PipelineOrchestrator
+        files = PipelineOrchestrator._parse_task_files("No files here.")
+        assert files == []
+
+    def test_build_file_prompt_focused(self):
+        """_build_file_prompt mentions only the target file."""
+        from zhushou.pipeline.orchestrator import PipelineOrchestrator
+        prompt = PipelineOrchestrator._build_file_prompt(
+            "calculator/core.py",
+            "Build a calculator",
+            "Architecture here",
+            "Implement add, subtract",
+        )
+        assert "calculator/core.py" in prompt
+        assert "ONLY" in prompt
+        assert "NEW file" in prompt  # core.py is not scaffolded
+
+    def test_build_file_prompt_scaffolded(self):
+        """_build_file_prompt detects scaffolded files."""
+        from zhushou.pipeline.orchestrator import PipelineOrchestrator
+        prompt = PipelineOrchestrator._build_file_prompt(
+            "calculator/api.py",
+            "Build a calculator",
+            "Architecture here",
+            "Add API functions",
+        )
+        assert "scaffolded" in prompt.lower()
+        assert "read_file" in prompt
+        assert "edit_file" in prompt
+
+    def test_extract_task_for_file(self):
+        """_extract_task_for_file pulls the right section."""
+        from zhushou.pipeline.orchestrator import PipelineOrchestrator
+        md = (
+            "## Task 1: calculator/core.py\n"
+            "Implement add and subtract functions.\n"
+            "Key components: add(), subtract()\n\n"
+            "## Task 2: calculator/api.py\n"
+            "Add API wrappers.\n"
+        )
+        task = PipelineOrchestrator._extract_task_for_file(
+            "calculator/core.py", md,
+        )
+        assert "add" in task.lower()
+        assert "subtract" in task.lower()
+
+
+# ===========================================================================
+# Knowledge Base — Config
+# ===========================================================================
+
+class TestKBConfig:
+    def test_defaults(self):
+        from zhushou.knowledge.kb_config import KBConfig
+        cfg = KBConfig()
+        assert cfg.chunk_size == 800
+        assert cfg.chunk_overlap == 150
+        assert cfg.min_chunk_size == 50
+        assert cfg.top_k == 10
+        assert cfg.embedding_model == "nomic-embed-text"
+        assert cfg.ollama_url == "http://localhost:11434"
+        assert "kb" in cfg.docs_dir
+        assert "kb" in cfg.chroma_dir
+
+    def test_docs_path_property(self):
+        from zhushou.knowledge.kb_config import KBConfig
+        cfg = KBConfig(docs_dir="/tmp/test_docs")
+        assert cfg.docs_path == Path("/tmp/test_docs")
+
+    def test_chroma_path_property(self):
+        from zhushou.knowledge.kb_config import KBConfig
+        cfg = KBConfig(chroma_dir="/tmp/test_chroma")
+        assert cfg.chroma_path == Path("/tmp/test_chroma")
+
+    def test_load_nonexistent_returns_defaults(self):
+        from zhushou.knowledge.kb_config import load_kb_config
+        cfg = load_kb_config("/tmp/nonexistent_zhushou_kb_config.json")
+        assert cfg.chunk_size == 800
+
+    def test_save_and_load_roundtrip(self, tmp_path):
+        from zhushou.knowledge.kb_config import KBConfig, save_kb_config, load_kb_config
+        cfg = KBConfig(chunk_size=500, top_k=5)
+        cfg_path = tmp_path / "kb_config.json"
+        save_kb_config(cfg, cfg_path)
+        loaded = load_kb_config(cfg_path)
+        assert loaded.chunk_size == 500
+        assert loaded.top_k == 5
+
+
+# ===========================================================================
+# Knowledge Base — Doc Sources
+# ===========================================================================
+
+class TestDocSources:
+    def test_doc_sources_is_dict(self):
+        from zhushou.knowledge.doc_sources import DOC_SOURCES
+        assert isinstance(DOC_SOURCES, dict)
+        assert len(DOC_SOURCES) >= 9  # 9 required + extras
+
+    def test_required_frameworks_present(self):
+        from zhushou.knowledge.doc_sources import DOC_SOURCES
+        required = {"numpy", "pandas", "matplotlib", "scipy", "sympy",
+                     "torch", "pyside6", "pyqtgraph", "flask"}
+        assert required.issubset(set(DOC_SOURCES.keys()))
+
+    def test_each_source_has_name_and_urls(self):
+        from zhushou.knowledge.doc_sources import DOC_SOURCES
+        for key, info in DOC_SOURCES.items():
+            assert "name" in info, f"{key} missing 'name'"
+            assert "urls" in info, f"{key} missing 'urls'"
+            assert isinstance(info["urls"], list)
+            assert len(info["urls"]) > 0, f"{key} has empty urls"
+
+    def test_list_available_sources(self):
+        from zhushou.knowledge.doc_sources import list_available_sources
+        sources = list_available_sources()
+        assert isinstance(sources, list)
+        assert len(sources) >= 9
+        for s in sources:
+            assert "key" in s
+            assert "name" in s
+
+    def test_get_source_known(self):
+        from zhushou.knowledge.doc_sources import get_source
+        src = get_source("numpy")
+        assert src is not None
+        assert src["name"] == "NumPy"
+
+    def test_get_source_unknown(self):
+        from zhushou.knowledge.doc_sources import get_source
+        assert get_source("nonexistent_framework_xyz") is None
+
+
+# ===========================================================================
+# Knowledge Base — Cheatsheets
+# ===========================================================================
+
+class TestCheatsheets:
+    def test_cheatsheets_dict_not_empty(self):
+        from zhushou.knowledge.cheatsheets import CHEATSHEETS
+        assert isinstance(CHEATSHEETS, dict)
+        assert len(CHEATSHEETS) >= 9
+
+    def test_required_cheatsheets_present(self):
+        from zhushou.knowledge.cheatsheets import CHEATSHEETS
+        required = {"numpy", "pandas", "matplotlib", "scipy", "sympy",
+                     "torch", "pyside6", "pyqtgraph", "flask"}
+        assert required.issubset(set(CHEATSHEETS.keys()))
+
+    def test_each_cheatsheet_is_nonempty_string(self):
+        from zhushou.knowledge.cheatsheets import CHEATSHEETS
+        for name, cs in CHEATSHEETS.items():
+            assert isinstance(cs, str), f"{name} cheatsheet is not str"
+            assert len(cs) > 100, f"{name} cheatsheet too short"
+
+    def test_get_cheatsheet_known(self):
+        from zhushou.knowledge.cheatsheets import get_cheatsheet
+        cs = get_cheatsheet("numpy")
+        assert cs is not None
+        assert "numpy" in cs.lower() or "NumPy" in cs
+
+    def test_get_cheatsheet_unknown(self):
+        from zhushou.knowledge.cheatsheets import get_cheatsheet
+        assert get_cheatsheet("nonexistent_xyz") is None
+
+    def test_list_cheatsheets(self):
+        from zhushou.knowledge.cheatsheets import list_cheatsheets
+        names = list_cheatsheets()
+        assert isinstance(names, list)
+        assert "numpy" in names
+        assert names == sorted(names)  # sorted
+
+
+# ===========================================================================
+# Knowledge Base — Chunker (from indexer)
+# ===========================================================================
+
+class TestChunker:
+    def test_chunk_text_basic(self):
+        from zhushou.knowledge.indexer import KBIndexer
+        text = "A" * 2000
+        chunks = KBIndexer._chunk_text(text, 800, 150)
+        assert len(chunks) >= 2
+        # Each chunk is at most 800 chars
+        for c in chunks:
+            assert len(c) <= 800
+
+    def test_chunk_text_small_input(self):
+        from zhushou.knowledge.indexer import KBIndexer
+        text = "Hello world"
+        chunks = KBIndexer._chunk_text(text, 800, 150)
+        assert len(chunks) == 1
+        assert chunks[0] == "Hello world"
+
+    def test_chunk_text_empty(self):
+        from zhushou.knowledge.indexer import KBIndexer
+        chunks = KBIndexer._chunk_text("", 800, 150)
+        assert chunks == []
+
+    def test_chunk_overlap(self):
+        from zhushou.knowledge.indexer import KBIndexer
+        # 1600 chars, chunk_size=800, overlap=150
+        # First chunk: 0-800, second start: 800-150=650, chunk: 650-1450, third: 1300-1600
+        text = "X" * 1600
+        chunks = KBIndexer._chunk_text(text, 800, 150)
+        assert len(chunks) >= 2
+
+
+# ===========================================================================
+# Knowledge Base — Language Detection (from indexer)
+# ===========================================================================
+
+class TestLanguageDetection:
+    def test_english_text(self):
+        from zhushou.knowledge.indexer import KBIndexer
+        assert KBIndexer._detect_language("Hello world, this is English text.") == "en"
+
+    def test_chinese_text(self):
+        from zhushou.knowledge.indexer import KBIndexer
+        text = "这是一段中文文本，用于测试语言检测功能。" * 5
+        assert KBIndexer._detect_language(text) == "zh"
+
+    def test_japanese_text(self):
+        from zhushou.knowledge.indexer import KBIndexer
+        text = "これはテストです。" * 5
+        assert KBIndexer._detect_language(text) == "ja"
+
+    def test_korean_text(self):
+        from zhushou.knowledge.indexer import KBIndexer
+        text = "한국어테스트입니다。" * 5
+        assert KBIndexer._detect_language(text) == "ko"
+
+    def test_russian_text(self):
+        from zhushou.knowledge.indexer import KBIndexer
+        text = "Это тестовый текст на русском языке для проверки определения языка." * 3
+        assert KBIndexer._detect_language(text) == "ru"
+
+
+# ===========================================================================
+# Knowledge Base — Doc Downloader (unit, no network)
+# ===========================================================================
+
+class TestDocDownloader:
+    def test_download_unknown_source(self):
+        from zhushou.knowledge.doc_manager import DocDownloader
+        dl = DocDownloader(docs_dir="/tmp/test_kb_docs_nonexistent")
+        saved, errors = dl.download_source("nonexistent_framework_xyz")
+        assert saved == 0
+        assert len(errors) == 1
+        assert "Unknown" in errors[0]
+
+    def test_list_downloaded_empty(self, tmp_path):
+        from zhushou.knowledge.doc_manager import DocDownloader
+        dl = DocDownloader(docs_dir=tmp_path / "empty_docs")
+        result = dl.list_downloaded()
+        assert result == []
+
+    def test_list_downloaded_with_files(self, tmp_path):
+        from zhushou.knowledge.doc_manager import DocDownloader
+        docs_dir = tmp_path / "docs"
+        numpy_dir = docs_dir / "numpy"
+        numpy_dir.mkdir(parents=True)
+        (numpy_dir / "intro.md").write_text("# NumPy Intro", encoding="utf-8")
+        dl = DocDownloader(docs_dir=docs_dir)
+        result = dl.list_downloaded()
+        assert len(result) == 1
+        assert result[0]["name"] == "numpy"
+        assert result[0]["file_count"] == 1
+
+    def test_convert_to_md_rst(self):
+        from zhushou.knowledge.doc_manager import DocDownloader
+        content, fname = DocDownloader._convert_to_md("rst content", "doc.rst")
+        assert fname == "doc.md"
+
+    def test_convert_to_md_python(self):
+        from zhushou.knowledge.doc_manager import DocDownloader
+        content, fname = DocDownloader._convert_to_md("print('hi')", "example.py")
+        assert fname == "example.md"
+        assert "```python" in content
+
+    def test_convert_to_md_already_md(self):
+        from zhushou.knowledge.doc_manager import DocDownloader
+        content, fname = DocDownloader._convert_to_md("# hello", "readme.md")
+        assert fname == "readme.md"
+        assert content == "# hello"
+
+
+# ===========================================================================
+# Knowledge Base — KBManager (unit, mocked dependencies)
+# ===========================================================================
+
+class TestKBManager:
+    def test_init_creates_instance(self):
+        from zhushou.knowledge.kb_manager import KBManager
+        from zhushou.knowledge.kb_config import KBConfig
+        cfg = KBConfig(docs_dir="/tmp/test_kb_mgr_docs", chroma_dir="/tmp/test_kb_mgr_chroma")
+        mgr = KBManager(cfg)
+        assert mgr is not None
+
+    def test_list_sources_returns_list(self):
+        from zhushou.knowledge.kb_manager import KBManager
+        from zhushou.knowledge.kb_config import KBConfig
+        cfg = KBConfig(docs_dir="/tmp/test_kb_mgr_docs2", chroma_dir="/tmp/test_kb_mgr_chroma2")
+        mgr = KBManager(cfg)
+        sources = mgr.list_sources()
+        assert isinstance(sources, list)
+        assert len(sources) >= 9
+        for s in sources:
+            assert "key" in s
+            assert "name" in s
+            assert "cheatsheet" in s
+
+    def test_get_cheatsheet_delegates(self):
+        from zhushou.knowledge.kb_manager import KBManager
+        cs = KBManager.get_cheatsheet("numpy")
+        assert cs is not None
+        assert "NumPy" in cs
+
+    def test_get_cheatsheet_unknown(self):
+        from zhushou.knowledge.kb_manager import KBManager
+        assert KBManager.get_cheatsheet("nonexistent") is None
+
+
+# ===========================================================================
+# Knowledge Base — KB API functions
+# ===========================================================================
+
+class TestKBAPI:
+    def test_kb_list_returns_toolresult(self):
+        from zhushou.api import kb_list, ToolResult
+        result = kb_list()
+        assert isinstance(result, ToolResult)
+        # Should succeed even if nothing downloaded
+        assert result.success is True
+        assert isinstance(result.data, list)
+
+    def test_kb_search_returns_toolresult(self):
+        from zhushou.api import kb_search, ToolResult
+        result = kb_search("test query")
+        assert isinstance(result, ToolResult)
+        # Success is True even with empty results (no indexed data)
+        assert result.success is True
+
+
+# ===========================================================================
+# Function Design — FunctionSpec
+# ===========================================================================
+
+class TestFunctionSpec:
+    def test_creation_defaults(self):
+        from zhushou.pipeline.function_design import FunctionSpec
+        spec = FunctionSpec(
+            name="mod.func",
+            file_path="mod.py",
+            signature="func(x: int) -> int",
+            docstring="Do something",
+        )
+        assert spec.name == "mod.func"
+        assert spec.dependencies == []
+        assert spec.is_class_def is False
+        assert spec.implemented is False
+
+    def test_creation_with_deps(self):
+        from zhushou.pipeline.function_design import FunctionSpec
+        spec = FunctionSpec(
+            name="mod.bar",
+            file_path="mod.py",
+            signature="bar() -> None",
+            docstring="Bar",
+            dependencies=["mod.foo"],
+            is_class_def=False,
+        )
+        assert spec.dependencies == ["mod.foo"]
+
+
+# ===========================================================================
+# Function Design — FunctionRegistry
+# ===========================================================================
+
+class TestFunctionRegistry:
+    def _make_specs(self):
+        from zhushou.pipeline.function_design import FunctionSpec
+        return [
+            FunctionSpec(
+                name="calc.core.add",
+                file_path="calc/core.py",
+                signature="add(a: float, b: float) -> float",
+                docstring="Add two numbers",
+            ),
+            FunctionSpec(
+                name="calc.core.sub",
+                file_path="calc/core.py",
+                signature="sub(a: float, b: float) -> float",
+                docstring="Subtract",
+                dependencies=["calc.core.add"],
+            ),
+            FunctionSpec(
+                name="calc.cli.main",
+                file_path="calc/cli.py",
+                signature="main() -> None",
+                docstring="CLI entry",
+            ),
+        ]
+
+    def test_register_and_count(self):
+        from zhushou.pipeline.function_design import FunctionRegistry
+        reg = FunctionRegistry()
+        reg.register(self._make_specs())
+        assert len(reg.functions) == 3
+
+    def test_register_deduplicates(self):
+        from zhushou.pipeline.function_design import FunctionRegistry
+        reg = FunctionRegistry()
+        specs = self._make_specs()
+        reg.register(specs)
+        reg.register(specs)  # register again
+        assert len(reg.functions) == 3
+
+    def test_mark_implemented(self):
+        from zhushou.pipeline.function_design import FunctionRegistry
+        reg = FunctionRegistry()
+        reg.register(self._make_specs())
+        reg.mark_implemented("calc.core.add")
+        assert reg.functions[0].implemented is True
+        assert reg.functions[1].implemented is False
+
+    def test_get_unimplemented_for_file(self):
+        from zhushou.pipeline.function_design import FunctionRegistry
+        reg = FunctionRegistry()
+        reg.register(self._make_specs())
+        reg.mark_implemented("calc.core.add")
+        unimpl = reg.get_unimplemented_for_file("calc/core.py")
+        assert len(unimpl) == 1
+        assert unimpl[0].name == "calc.core.sub"
+
+    def test_get_implemented_signatures(self):
+        from zhushou.pipeline.function_design import FunctionRegistry
+        reg = FunctionRegistry()
+        reg.register(self._make_specs())
+        reg.mark_implemented("calc.core.add")
+        sigs = reg.get_implemented_signatures("calc/core.py")
+        assert "add" in sigs
+        assert "sub" not in sigs
+
+    def test_get_dependency_signatures(self):
+        from zhushou.pipeline.function_design import FunctionRegistry
+        reg = FunctionRegistry()
+        reg.register(self._make_specs())
+        deps = reg.get_dependency_signatures("calc.core.sub")
+        assert "add" in deps
+
+    def test_all_implemented_false(self):
+        from zhushou.pipeline.function_design import FunctionRegistry
+        reg = FunctionRegistry()
+        reg.register(self._make_specs())
+        assert reg.all_implemented() is False
+
+    def test_all_implemented_true(self):
+        from zhushou.pipeline.function_design import FunctionRegistry
+        reg = FunctionRegistry()
+        reg.register(self._make_specs())
+        for s in reg.functions:
+            reg.mark_implemented(s.name)
+        assert reg.all_implemented() is True
+
+    def test_file_paths(self):
+        from zhushou.pipeline.function_design import FunctionRegistry
+        reg = FunctionRegistry()
+        reg.register(self._make_specs())
+        paths = reg.file_paths()
+        assert paths == ["calc/core.py", "calc/cli.py"]
+
+    def test_summary(self):
+        from zhushou.pipeline.function_design import FunctionRegistry
+        reg = FunctionRegistry()
+        reg.register(self._make_specs())
+        reg.mark_implemented("calc.core.add")
+        assert reg.summary() == "1/3 functions implemented"
+
+    def test_to_dict_and_from_dict(self):
+        from zhushou.pipeline.function_design import FunctionRegistry
+        reg = FunctionRegistry()
+        reg.register(self._make_specs())
+        reg.mark_implemented("calc.core.add")
+        data = reg.to_dict()
+        reg2 = FunctionRegistry.from_dict(data)
+        assert len(reg2.functions) == 3
+        assert reg2.functions[0].implemented is True
+        assert reg2.summary() == reg.summary()
+
+
+# ===========================================================================
+# Function Design — parse_function_design
+# ===========================================================================
+
+class TestParseFunctionDesign:
+    SAMPLE_MD = """\
+## File: calculator/core.py
+
+### class Calculator
+- `__init__(self, precision: int = 10)` -- Initialize calculator
+- `add(self, a: float, b: float) -> float` -- Add two numbers
+  - depends_on: validate_input
+
+### function validate_input
+- `validate_input(value: Any) -> float` -- Validate and convert input
+
+## File: calculator/cli.py
+
+### function main
+- `main() -> None` -- CLI entry point
+"""
+
+    def test_parses_correct_count(self):
+        from zhushou.pipeline.function_design import parse_function_design
+        specs = parse_function_design(self.SAMPLE_MD)
+        assert len(specs) == 4
+
+    def test_file_paths(self):
+        from zhushou.pipeline.function_design import parse_function_design
+        specs = parse_function_design(self.SAMPLE_MD)
+        paths = {s.file_path for s in specs}
+        assert paths == {"calculator/core.py", "calculator/cli.py"}
+
+    def test_class_method_fq_name(self):
+        from zhushou.pipeline.function_design import parse_function_design
+        specs = parse_function_design(self.SAMPLE_MD)
+        init_spec = [s for s in specs if "__init__" in s.name][0]
+        assert "Calculator" in init_spec.name
+        assert init_spec.is_class_def is True
+
+    def test_dependencies_parsed(self):
+        from zhushou.pipeline.function_design import parse_function_design
+        specs = parse_function_design(self.SAMPLE_MD)
+        add_spec = [s for s in specs if "add" in s.name][0]
+        assert "validate_input" in add_spec.dependencies
+
+    def test_standalone_function(self):
+        from zhushou.pipeline.function_design import parse_function_design
+        specs = parse_function_design(self.SAMPLE_MD)
+        main_spec = [s for s in specs if "main" in s.name][0]
+        assert main_spec.file_path == "calculator/cli.py"
+        assert main_spec.dependencies == []
+
+    def test_empty_input(self):
+        from zhushou.pipeline.function_design import parse_function_design
+        specs = parse_function_design("")
+        assert specs == []
+
+
+# ===========================================================================
+# Pipeline — Stage Indices and Counts
+# ===========================================================================
+
+class TestPipelineStageIndices:
+    def test_all_stages_count(self):
+        from zhushou.pipeline.stages import ALL_STAGES
+        assert len(ALL_STAGES) == 8
+
+    def test_full_stages_count(self):
+        from zhushou.pipeline.stages import FULL_STAGES
+        assert len(FULL_STAGES) == 10
+
+    def test_function_design_is_stage_3(self):
+        from zhushou.pipeline.stages import ALL_STAGES
+        assert ALL_STAGES[3].name == "Function Design"
+
+    def test_implementation_is_stage_4(self):
+        from zhushou.pipeline.stages import ALL_STAGES
+        assert ALL_STAGES[4].name == "Implementation"
+
+    def test_stage_names_ordered(self):
+        from zhushou.pipeline.stages import ALL_STAGES
+        expected_names = [
+            "Requirements Analysis",
+            "Architecture Design",
+            "Task Breakdown",
+            "Function Design",
+            "Implementation",
+            "Testing",
+            "Debugging",
+            "Verification",
+        ]
+        actual_names = [s.name for s in ALL_STAGES]
+        assert actual_names == expected_names
+
+    def test_full_stages_includes_doc_packaging(self):
+        from zhushou.pipeline.stages import FULL_STAGES
+        assert FULL_STAGES[8].name == "Documentation"
+        assert FULL_STAGES[9].name == "Packaging"
+
+
+# ===========================================================================
+# Pipeline — build_user_prompt
+# ===========================================================================
+
+class TestBuildUserPrompt:
+    def test_stage_0_contains_request(self):
+        from zhushou.pipeline.stages import build_user_prompt
+        p = build_user_prompt(0, "Build a calc", {})
+        assert "Build a calc" in p
+
+    def test_stage_3_mentions_function_design(self):
+        from zhushou.pipeline.stages import build_user_prompt
+        p = build_user_prompt(3, "Build a calc", {"architecture": "arch", "tasks": "tasks"})
+        assert "function" in p.lower() or "signature" in p.lower()
+
+    def test_stage_4_includes_function_design_context(self):
+        from zhushou.pipeline.stages import build_user_prompt
+        ctx = {
+            "requirements": "req",
+            "architecture": "arch",
+            "tasks": "tasks",
+            "function_design": "## Function Design here",
+        }
+        p = build_user_prompt(4, "Build a calc", ctx)
+        assert "Function Design" in p
+
+    def test_stage_4_includes_kb_context(self):
+        from zhushou.pipeline.stages import build_user_prompt
+        ctx = {
+            "requirements": "req",
+            "architecture": "arch",
+            "tasks": "tasks",
+            "function_design": "design",
+            "kb_context": "## NumPy Reference\nnp.array(...)",
+        }
+        p = build_user_prompt(4, "Build a calc", ctx)
+        assert "NumPy Reference" in p
+
+    def test_stage_9_packaging(self):
+        from zhushou.pipeline.stages import build_user_prompt
+        p = build_user_prompt(9, "Build a calc", {"requirements": "r", "architecture": "a", "implementation": "i"})
+        assert "pyproject.toml" in p
+
+
+# ===========================================================================
+# PersistentMemory — Pipeline Session Helpers
+# ===========================================================================
+
+class TestPersistentMemoryPipeline:
+    def test_set_and_get_pipeline(self, tmp_memory_file):
+        from zhushou.memory.persistent import PersistentMemory
+        mem = PersistentMemory(path=tmp_memory_file)
+        mem.set_pipeline("test_session", {"stage": 3, "data": "hello"})
+        result = mem.get_pipeline("test_session")
+        assert result == {"stage": 3, "data": "hello"}
+
+    def test_get_pipeline_missing(self, tmp_memory_file):
+        from zhushou.memory.persistent import PersistentMemory
+        mem = PersistentMemory(path=tmp_memory_file)
+        assert mem.get_pipeline("nonexistent") is None
+
+    def test_clear_pipeline(self, tmp_memory_file):
+        from zhushou.memory.persistent import PersistentMemory
+        mem = PersistentMemory(path=tmp_memory_file)
+        mem.set_pipeline("sess1", {"x": 1})
+        mem.clear_pipeline("sess1")
+        assert mem.get_pipeline("sess1") is None
+
+    def test_pipeline_key_namespaced(self, tmp_memory_file):
+        from zhushou.memory.persistent import PersistentMemory
+        mem = PersistentMemory(path=tmp_memory_file)
+        mem.set_pipeline("sess1", {"x": 1})
+        # The raw key should be namespaced
+        assert mem.get("pipeline:sess1") == {"x": 1}
+        assert mem.get("sess1") is None
+
+
+# ===========================================================================
+# Knowledge Base — Constants
+# ===========================================================================
+
+class TestKBConstants:
+    def test_kb_dir_defined(self):
+        from zhushou.utils.constants import KB_DIR, KB_DOCS_DIR, KB_CHROMA_DIR, KB_CONFIG_FILE
+        assert "kb" in str(KB_DIR)
+        assert "docs" in str(KB_DOCS_DIR)
+        assert "chroma" in str(KB_CHROMA_DIR)
+        assert "config" in str(KB_CONFIG_FILE)
+
+    def test_kb_paths_under_data_dir(self):
+        from zhushou.utils.constants import DATA_DIR, KB_DIR
+        assert str(KB_DIR).startswith(str(DATA_DIR))
+
+
+# ===========================================================================
+# Knowledge Base — Package Exports
+# ===========================================================================
+
+class TestKBPackageExports:
+    def test_kb_init_exports(self):
+        from zhushou.knowledge import (
+            CHEATSHEETS, DOC_SOURCES, KBConfig, KBManager,
+            get_cheatsheet, list_cheatsheets, load_kb_config, save_kb_config,
+        )
+        assert callable(get_cheatsheet)
+        assert callable(list_cheatsheets)
+        assert callable(load_kb_config)
+        assert callable(save_kb_config)
+        assert isinstance(CHEATSHEETS, dict)
+        assert isinstance(DOC_SOURCES, dict)

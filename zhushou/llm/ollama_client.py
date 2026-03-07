@@ -14,8 +14,8 @@ from .base import BaseLLMClient, LLMResponse, ModelInfo, TokenUsage, ToolCallReq
 logger = logging.getLogger(__name__)
 
 _DEFAULT_TIMEOUT = httpx.Timeout(300.0, connect=10.0)
-_MAX_RETRIES = 3
-_RETRY_BACKOFF_BASE = 2.0
+_MAX_RETRIES = 5
+_RETRY_BACKOFF_BASE = 3.0
 
 
 class OllamaLLMClient(BaseLLMClient):
@@ -26,12 +26,14 @@ class OllamaLLMClient(BaseLLMClient):
         base_url: str = "http://localhost:11434",
         model: str = "",
         proxy: str = "",
+        timeout: int = 300,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._model = model
+        self._timeout = httpx.Timeout(float(timeout), connect=10.0)
         client_kwargs: dict[str, Any] = {
             "base_url": self._base_url,
-            "timeout": _DEFAULT_TIMEOUT,
+            "timeout": self._timeout,
             "trust_env": False,
         }
         if proxy:
