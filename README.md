@@ -1,13 +1,19 @@
 # ZhuShou (助手) - AI-Powered Development Assistant
 
-An AI-powered development assistant with multi-model LLM support, three-tier memory, tool execution, and an autonomous 7-stage coding pipeline.
+An AI-powered development assistant with multi-model LLM support, three interfaces (CLI, desktop GUI, web), an autonomous 8-stage coding pipeline, three-tier memory, and persistent configuration.
 
 ## Features
 
 - **Multi-provider LLM support** - Ollama, OpenAI, Anthropic, DeepSeek, Gemini, LM Studio, vLLM
 - **Interactive REPL** with streaming responses and slash commands
 - **11 built-in tools** - file read/write/edit, shell commands, glob, grep, search, git operations
-- **7-stage autonomous coding pipeline** - Requirements, Architecture, Tasks, Implementation, Testing, Debugging, Verification
+- **8-stage autonomous coding pipeline** - Requirements, Architecture, Tasks, Function Design, Implementation, Testing, Debugging, Verification (10 stages with `--full`)
+- **Desktop GUI** - PySide6-based with real-time pipeline visualization, syntax-highlighted code viewer, and Catppuccin Mocha dark theme
+- **Web Interface** - FastAPI + vanilla JS at `http://127.0.0.1:8765`, real-time WebSocket event streaming, no build step required
+- **First-run Setup Wizard** - auto-discovers Python interpreters, guides provider/model selection (CLI and GUI modes)
+- **Persistent Configuration** - settings stored in `~/.zhushou/config.json`, CLI args always override stored values
+- **Event-driven Architecture** - thread-safe pub/sub event bus with 13 event types powering real-time UI updates
+- **Knowledge Base** - download, index, and search framework documentation; built-in cheatsheets; pipeline context injection via `--kb`
 - **Three-tier memory system** - persistent JSON KV store, JSONL conversation logs, ChromaDB vector search
 - **Context window management** - automatic compaction when 80% of context budget is used
 - **Token tracking and cost estimation** per provider/model
@@ -20,6 +26,11 @@ An AI-powered development assistant with multi-model LLM support, three-tier mem
 - Python >= 3.10
 - httpx (required)
 - rich (required)
+
+Optional:
+- PySide6 (for desktop GUI)
+- FastAPI + uvicorn (for web interface)
+- ChromaDB (for vector search)
 
 ## Installation
 
@@ -48,6 +59,12 @@ pip install zhushou[openai]
 pip install zhushou[anthropic]
 pip install zhushou[gemini]
 
+# Install desktop GUI (PySide6)
+pip install zhushou[gui]
+
+# Install web interface (FastAPI + uvicorn)
+pip install zhushou[web]
+
 # Install everything
 pip install zhushou[all]
 ```
@@ -63,14 +80,32 @@ zhushou
 # Single-turn chat
 zhushou chat "Explain Python decorators"
 
-# Run the 7-stage autonomous pipeline
+# Run the 8-stage autonomous pipeline
 zhushou pipeline "Build a Gomoku game" -o ./output
+
+# Run the full 10-stage pipeline (adds documentation + packaging)
+zhushou pipeline "Build a Flask API" --full -o ./api
+
+# Run pipeline with knowledge base context
+zhushou pipeline "Build a Flask API" --kb flask -o ./api
+
+# Launch desktop GUI
+zhushou gui
+
+# Launch web interface
+zhushou web
 
 # List available models
 zhushou models
 
 # Show configuration
 zhushou config
+
+# Re-run setup wizard
+zhushou config --setup
+
+# Knowledge base management
+zhushou kb list
 
 # Show version
 zhushou -V
@@ -96,15 +131,20 @@ zhushou [options] [command]
 | `--api-key` | | API key for cloud providers |
 | `--base-url` | | Custom API endpoint URL |
 | `--proxy` | | HTTP/HTTPS proxy URL (default: disabled) |
+| `--timeout` | | LLM request timeout in seconds (default: 300) |
+| `--no-setup` | | Skip first-run setup wizard |
 
 ### Subcommands
 
 | Command | Description |
 |---------|-------------|
 | `chat` | Send a message to the assistant |
-| `pipeline` | Run the 7-stage autonomous coding pipeline |
+| `pipeline` | Run the 8-stage autonomous coding pipeline (10 with `--full`) |
 | `models` | List available models across providers |
-| `config` | Show or edit configuration |
+| `config` | Show configuration; `--setup` to re-run wizard |
+| `gui` | Launch PySide6 desktop GUI |
+| `web` | Launch web interface (`--port`, `--host`) |
+| `kb` | Knowledge base management (list, download, index, search) |
 
 ### Interactive REPL Commands
 
@@ -141,20 +181,119 @@ zhushou --provider deepseek --api-key sk-...
 zhushou --provider openai --base-url http://localhost:8080/v1
 ```
 
-## Autonomous Pipeline
+## Desktop GUI
 
-The 7-stage pipeline generates a complete project from a text description:
-
-1. **Requirements** - Analyse the request and produce a specification
-2. **Architecture** - Design file structure and module layout
-3. **Task Breakdown** - Create ordered implementation tasks
-4. **Implementation** - Write code file by file
-5. **Testing** - Generate and run tests
-6. **Debugging** - Fix any failing tests (up to 5 retries)
-7. **Verification** - Final check and summary
+Launch the PySide6 desktop GUI for a graphical pipeline experience:
 
 ```bash
+pip install zhushou[gui]
+zhushou gui
+```
+
+The GUI provides a real-time view of the coding pipeline with a Catppuccin Mocha dark theme:
+
+- **Top bar** - Request text input field, Run / Stop buttons, provider and model status
+- **Stage sidebar** (left, 200-280px) - Pipeline stage progress with status indicators:
+  - ○ pending  ● running  ✓ complete  ✗ error
+- **Code panel** (top-right, ~60%) - File list with syntax-highlighted Python code viewer
+- **Thinking panel** (bottom-right, ~40%) - Real-time LLM reasoning, tool calls, test results
+- **Status bar** - Provider, model, elapsed time
+
+On first launch, a **setup wizard dialog** guides you through 4 steps: Python interpreter selection, LLM provider selection, API key entry (skipped for local providers like Ollama), and model selection.
+
+## Web Interface
+
+Launch the FastAPI web interface for browser-based access:
+
+```bash
+pip install zhushou[web]
+zhushou web [--port PORT] [--host HOST]
+```
+
+Default URL: `http://127.0.0.1:8765`
+
+The web interface provides the same split-panel layout as the desktop GUI (sidebar + code panel + thinking panel) with the same Catppuccin Mocha dark theme. Updates stream in real-time via WebSocket. No build step is required — the frontend is vanilla HTML/CSS/JS served directly by FastAPI.
+
+### API Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/config` | GET | Current configuration (API keys masked) |
+| `/api/providers` | GET | Available LLM providers |
+| `/api/models` | GET | Models for current provider |
+| `/api/pipeline` | POST | Start a pipeline run (`{"request": "..."}`) |
+| `/ws` | WebSocket | Real-time event stream |
+
+## Configuration & Setup Wizard
+
+ZhuShou stores configuration in `~/.zhushou/config.json`. On first launch, the setup wizard runs automatically to configure:
+
+1. **Python interpreter** - auto-discovers interpreters from PATH, pyenv, and conda environments
+2. **LLM provider** - select from available providers (Ollama, OpenAI, Anthropic, etc.)
+3. **API key** - enter the API key for cloud providers (skipped for local providers)
+4. **Model** - select from the provider's available models
+
+To re-run the wizard: `zhushou config --setup`
+
+To skip the wizard: `zhushou --no-setup`
+
+CLI arguments always override stored configuration values.
+
+| Field | Description | Default |
+|-------|-------------|---------|
+| `python_path` | Python interpreter path | (auto-detected) |
+| `provider` | LLM provider | `ollama` |
+| `model` | Model name | (selected during setup) |
+| `api_key` | Cloud provider API key | (empty) |
+| `base_url` | Custom API endpoint | (empty) |
+| `proxy` | HTTP proxy URL | (empty) |
+| `timeout` | Request timeout in seconds | `300` |
+
+## Autonomous Pipeline
+
+The 8-stage pipeline generates a complete project from a text description:
+
+1. **Requirements** - Analyse the request and produce a specification
+2. **Architecture** - Design file structure, module layout, and scaffold the project
+3. **Task Breakdown** - Create ordered implementation tasks
+4. **Function Design** - Detailed function-level signatures and dependencies
+5. **Implementation** - Write code file by file
+6. **Testing** - Generate and run tests
+7. **Debugging** - Fix any failing tests (up to 5 retries with verify-debug feedback loop)
+8. **Verification** - Final check, import validation, and summary report
+
+With `--full`, two additional stages are added:
+
+9. **Documentation** - Generate README.md, README_CN.md, requirements.txt
+10. **Packaging** - Generate pyproject.toml, upload scripts, help screenshot generator
+
+```bash
+# Standard 8-stage pipeline
 zhushou pipeline "Build a REST API with Flask" -o ./my_api
+
+# Full 10-stage pipeline
+zhushou pipeline "Build a Gomoku game" --full -o ./game
+
+# Pipeline with knowledge base context
+zhushou pipeline "Build a Flask app" --kb flask -o ./app
+```
+
+## Knowledge Base
+
+Download, index, and search official framework documentation for use as pipeline context:
+
+| Command | Description |
+|---------|-------------|
+| `zhushou kb list` | List available sources with download/index status |
+| `zhushou kb download <source>` | Download official docs for a framework |
+| `zhushou kb index <source>` | Index downloaded docs into vector DB |
+| `zhushou kb search <query>` | Search indexed knowledge base |
+| `zhushou kb cheatsheet <name>` | Display built-in cheatsheet |
+
+Inject knowledge base context into pipeline runs with the `--kb` flag:
+
+```bash
+zhushou pipeline "Build a data viz app" --kb numpy matplotlib -o ./viz
 ```
 
 ## Memory System
@@ -194,6 +333,30 @@ Search order: `.zhushou/persona.md` -> `~/.zhushou/persona.md` -> built-in defau
 ```
 ZhuShou/
 ├── zhushou/                # Main package
+│   ├── config/            # Persistent configuration
+│   │   ├── manager.py         # ZhuShouConfig dataclass + JSON I/O
+│   │   └── wizard.py          # First-run setup wizard (CLI + GUI)
+│   ├── events/            # Event system
+│   │   ├── types.py           # 13 frozen event dataclasses
+│   │   └── bus.py             # Thread-safe PipelineEventBus
+│   ├── gui/               # Desktop GUI (PySide6)
+│   │   ├── app.py             # Application entry point
+│   │   ├── main_window.py     # MainWindow (1400x850)
+│   │   ├── pipeline_view.py   # Split-view container
+│   │   ├── stage_sidebar.py   # Stage progress sidebar
+│   │   ├── code_panel.py      # File list + syntax-highlighted viewer
+│   │   ├── thinking_panel.py  # LLM reasoning display
+│   │   ├── wizard_dialog.py   # Setup wizard dialog (4 pages)
+│   │   ├── workers.py         # QThread pipeline worker + EventBridge
+│   │   └── styles.py          # Catppuccin Mocha theme + QSS
+│   ├── web/               # Web interface (FastAPI)
+│   │   ├── app.py             # FastAPI factory + uvicorn launcher
+│   │   ├── routes.py          # REST + WebSocket endpoints
+│   │   ├── bridge.py          # Event bus -> WebSocket bridge
+│   │   └── static/            # Vanilla JS frontend
+│   │       ├── index.html
+│   │       ├── style.css
+│   │       └── app.js
 │   ├── llm/               # LLM provider abstraction
 │   │   ├── base.py             # BaseLLMClient ABC + dataclasses
 │   │   ├── ollama_client.py    # Ollama provider
@@ -214,14 +377,25 @@ ZhuShou/
 │   │   ├── persistent.py       # JSON KV store
 │   │   ├── conversation_log.py # JSONL logger
 │   │   └── vector_store.py     # ChromaDB / numpy fallback
+│   ├── knowledge/         # Knowledge base subsystem
+│   │   ├── kb_manager.py       # High-level facade
+│   │   ├── kb_config.py        # KB configuration
+│   │   ├── doc_sources.py      # Official doc source definitions
+│   │   ├── doc_manager.py      # Doc downloader
+│   │   ├── indexer.py          # Vector DB indexer
+│   │   ├── retriever.py        # RAG search
+│   │   └── cheatsheets.py      # Built-in cheatsheets
 │   ├── pipeline/          # Autonomous pipeline
-│   │   ├── stages.py           # 7 stage definitions
-│   │   └── orchestrator.py     # Pipeline runner
+│   │   ├── stages.py           # 8 core + 2 full-mode stages
+│   │   ├── orchestrator.py     # Pipeline runner with event emission
+│   │   └── function_design.py  # Function-level design parser
 │   ├── display/           # Rich console output
 │   ├── persona/           # Persona loader
 │   ├── tracking/          # Token usage tracker
 │   ├── git/               # Git operations
-│   ├── utils/             # Constants, python finder
+│   ├── utils/             # Utilities
+│   │   ├── constants.py        # Project constants
+│   │   └── python_finder.py    # Multi-source Python discovery
 │   ├── api.py             # Unified Python API
 │   ├── tools.py           # OpenAI function-calling schemas
 │   └── cli.py             # CLI entry point
@@ -291,4 +465,4 @@ result = dispatch(
 
 ## License
 
-MIT License
+GPLv3 License

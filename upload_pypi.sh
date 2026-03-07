@@ -1,106 +1,37 @@
 #!/usr/bin/env bash
-#
-# upload_pypi.sh - Build and upload ZhuShou to PyPI
-#
-# Usage:
-#   ./upload_pypi.sh          # Upload to PyPI (production)
-#   ./upload_pypi.sh test     # Upload to TestPyPI first
-#   ./upload_pypi.sh build    # Build only, no upload
-#
-set -euo pipefail
+# ZhuShou - Build and upload to PyPI
+set -e
+cd "$(dirname "${BASH_SOURCE[0]}")"
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
+PYTHON="C:/Miniconda3/envs/dev/python.exe"
+VERSION_FILE="zhushou/__init__.py"
 
-# Colors
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m'
+echo "=== ZhuShou PyPI Upload ==="
 
-info()  { echo -e "${GREEN}[INFO]${NC} $*"; }
-warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
-error() { echo -e "${RED}[ERROR]${NC} $*"; exit 1; }
+echo "[1/5] Bumping patch version..."
+"$PYTHON" -c "
+import re, sys
+p = '$VERSION_FILE'
+t = open(p,encoding='utf-8').read()
+m = re.search(r'(__version__\s*=\s*\"(\d+\.\d+\.)(\d+)\")', t)
+if not m: print('ERROR: cannot parse version'); sys.exit(1)
+old_v = m.group(2) + m.group(3)
+new_v = m.group(2) + str(int(m.group(3)) + 1)
+open(p,'w',encoding='utf-8').write(t.replace(m.group(1), '__version__ = \"' + new_v + '\"'))
+print(f'  {old_v} -> {new_v}')
+"
 
-# ── Step 1: Check prerequisites ──────────────────────────────────────────────
-info "Checking prerequisites..."
+echo "[2/5] Cleaning old builds..."
+rm -rf dist/ build/ *.egg-info zhushou.egg-info
 
-command -v python3 >/dev/null 2>&1 || error "python3 not found"
-python3 -m pip --version >/dev/null 2>&1 || error "pip not found"
+echo "[3/5] Installing build tools..."
+"$PYTHON" -m pip install --upgrade build twine -q
 
-# Install build tools if missing
-for pkg in build twine; do
-    if ! python3 -m $pkg --help >/dev/null 2>&1; then
-        info "Installing $pkg..."
-        python3 -m pip install --upgrade $pkg
-    fi
-done
+echo "[4/5] Building package..."
+"$PYTHON" -m build
+"$PYTHON" -m twine check dist/*
 
-# ── Step 2: Read version from __init__.py (single source of truth) ────────────
-VERSION=$(python3 -c "
-import re
-with open('zhushou/__init__.py') as f:
-    m = re.search(r'__version__\s*=\s*\"(.+?)\"', f.read())
-    print(m.group(1) if m else 'UNKNOWN')
-")
+echo "[5/5] Uploading to PyPI..."
+"$PYTHON" -m twine upload dist/*
 
-if [ "$VERSION" = "UNKNOWN" ]; then
-    error "Could not read version from zhushou/__init__.py"
-fi
-
-info "Building version: $VERSION"
-
-# ── Step 3: Clean previous builds ────────────────────────────────────────────
-info "Cleaning previous builds..."
-rm -rf build/ dist/ *.egg-info zhushou.egg-info
-
-# ── Step 4: Build ────────────────────────────────────────────────────────────
-info "Building sdist and wheel..."
-python3 -m build
-
-# Verify artifacts
-if [ ! -d dist ] || [ -z "$(ls dist/)" ]; then
-    error "Build failed - no artifacts in dist/"
-fi
-
-info "Build artifacts:"
-ls -lh dist/
-
-# ── Step 5: Check package ────────────────────────────────────────────────────
-info "Running twine check..."
-python3 -m twine check dist/*
-
-# ── Step 6: Upload ───────────────────────────────────────────────────────────
-MODE="${1:-}"
-
-if [ "$MODE" = "build" ]; then
-    info "Build-only mode. Skipping upload."
-    info "Artifacts are in dist/"
-    exit 0
-fi
-
-if [ "$MODE" = "test" ]; then
-    info "Uploading to TestPyPI..."
-    warn "Make sure you have a TestPyPI account: https://test.pypi.org/account/register/"
-    echo ""
-    python3 -m twine upload --repository testpypi dist/*
-    echo ""
-    info "Uploaded to TestPyPI!"
-    info "Install with: pip install -i https://test.pypi.org/simple/ zhushou==$VERSION"
-    echo ""
-    read -p "Upload to production PyPI as well? [y/N] " confirm
-    if [[ "$confirm" != [yY] ]]; then
-        info "Skipped production upload."
-        exit 0
-    fi
-fi
-
-info "Uploading to PyPI..."
-warn "Make sure you have a PyPI account: https://pypi.org/account/register/"
-warn "Use API token: https://pypi.org/manage/account/token/"
-echo ""
-python3 -m twine upload dist/*
-
-echo ""
-info "Successfully uploaded zhushou $VERSION to PyPI!"
-info "Install with: pip install zhushou==$VERSION"
+echo "=== Done! ==="

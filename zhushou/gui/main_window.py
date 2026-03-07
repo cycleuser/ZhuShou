@@ -1,0 +1,260 @@
+"""Main window for the ZhuShou desktop GUI.
+
+Top bar: request input + Run button + settings.
+Central area: PipelineView (sidebar + code/thinking split).
+Status bar: provider, model, elapsed time.
+"""
+
+from __future__ import annotations
+
+import os
+import time
+from typing import Any
+
+from PySide6.QtCore import Qt, QTimer, Slot
+from PySide6.QtGui import QAction, QFont
+from PySide6.QtWidgets import (
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMainWindow,
+    QMessageBox,
+    QPushButton,
+    QStatusBar,
+    QVBoxLayout,
+    QWidget,
+)
+
+from zhushou.config.manager import ZhuShouConfig
+from zhushou.events.bus import PipelineEventBus
+from zhushou.gui.pipeline_view import PipelineView
+from zhushou.gui.styles import Colors, Fonts
+from zhushou.gui.workers import EventBridge, PipelineWorker
+
+
+class MainWindow(QMainWindow):
+    """ZhuShou main application window."""
+
+    def __init__(self, config: ZhuShouConfig | None = None) -> None:
+        super().__init__()
+        self._config = config or ZhuShouConfig.load()
+        self._worker: PipelineWorker | None = None
+        self._start_time: float = 0.0
+
+        self.setWindowTitle("ZhuShou - AI Development Assistant")
+        self.setMinimumSize(1100, 700)
+        self.resize(1400, 850)
+
+        self._setup_menu()
+        self._setup_ui()
+        self._setup_status_bar()
+        self._setup_timer()
+
+    def _setup_menu(self) -> None:
+        menu = self.menuBar()
+
+        # File menu
+        file_menu = menu.addMenu("&File")
+
+        setup_action = QAction("&Setup Wizard...", self)
+        setup_action.triggered.connect(self._open_setup_wizard)
+        file_menu.addAction(setup_action)
+
+        file_menu.addSeparator()
+
+        quit_action = QAction("&Quit", self)
+        quit_action.setShortcut("Ctrl+Q")
+        quit_action.triggered.connect(self.close)
+        file_menu.addAction(quit_action)
+
+        # View menu
+        view_menu = menu.addMenu("&View")
+
+        clear_action = QAction("&Clear Output", self)
+        clear_action.setShortcut("Ctrl+L")
+        clear_action.triggered.connect(self._clear_output)
+        view_menu.addAction(clear_action)
+
+    def _setup_ui(self) -> None:
+        central = QWidget()
+        self.setCentralWidget(central)
+
+        layout = QVBoxLayout(central)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        # ── Top bar: request input ──
+        top_bar = QWidget()
+        top_bar.setStyleSheet(
+            f"background-color: {Colors.BG_SECONDARY}; "
+            f"border-bottom: 1px solid {Colors.BORDER};"
+        )
+        top_layout = QHBoxLayout(top_bar)
+        top_layout.setContentsMargins(12, 8, 12, 8)
+        top_layout.setSpacing(8)
+
+        prompt_label = QLabel("Request:")
+        prompt_label.setFont(QFont(Fonts.FAMILY_UI, Fonts.SIZE_NORMAL))
+        prompt_label.setStyleSheet(
+            f"color: {Colors.FG_SECONDARY}; background: transparent;"
+        )
+        top_layout.addWidget(prompt_label)
+
+        self._request_input = QLineEdit()
+        self._request_input.setPlaceholderText(
+            "Describe the project you want to build..."
+        )
+        self._request_input.setFont(QFont(Fonts.FAMILY_UI, Fonts.SIZE_LARGE))
+        self._request_input.returnPressed.connect(self._on_run)
+        top_layout.addWidget(self._request_input, 1)
+
+        self._run_btn = QPushButton("Run Pipeline")
+        self._run_btn.setObjectName("primaryButton")
+        self._run_btn.setFont(QFont(Fonts.FAMILY_UI, Fonts.SIZE_NORMAL))
+        self._run_btn.setFixedHeight(36)
+        self._run_btn.clicked.connect(self._on_run)
+        top_layout.addWidget(self._run_btn)
+
+        self._stop_btn = QPushButton("Stop")
+        self._stop_btn.setStyleSheet(
+            f"background-color: {Colors.ERROR}; "
+            f"color: {Colors.BG_PRIMARY}; "
+            f"border: none; border-radius: 6px; "
+            f"padding: 6px 16px; font-weight: bold;"
+        )
+        self._stop_btn.setFixedHeight(36)
+        self._stop_btn.clicked.connect(self._on_stop)
+        self._stop_btn.hide()
+        top_layout.addWidget(self._stop_btn)
+
+        layout.addWidget(top_bar)
+
+        # ── Central: pipeline view ──
+        self._pipeline_view = PipelineView()
+        layout.addWidget(self._pipeline_view, 1)
+
+    def _setup_status_bar(self) -> None:
+        bar = QStatusBar()
+        self.setStatusBar(bar)
+
+        self._provider_label = QLabel(
+            f"Provider: {self._config.provider}"
+        )
+        bar.addWidget(self._provider_label)
+
+        self._model_label = QLabel(
+            f"Model: {self._config.model or '(auto)'}"
+        )
+        bar.addWidget(self._model_label)
+
+        self._time_label = QLabel("Elapsed: --")
+        bar.addPermanentWidget(self._time_label)
+
+    def _setup_timer(self) -> None:
+        """Timer to update elapsed time during pipeline runs."""
+        self._timer = QTimer(self)
+        self._timer.setInterval(1000)
+        self._timer.timeout.connect(self._update_elapsed)
+
+    # ── Actions ────────────────────────────────────────────────────
+
+    @Slot()
+    def _on_run(self) -> None:
+        request = self._request_input.text().strip()
+        if not request:
+            return
+
+        if self._worker and self._worker.isRunning():
+            return
+
+        # Reset UI
+        self._pipeline_view.clear()
+        self._run_btn.hide()
+        self._stop_btn.show()
+        self._request_input.setReadOnly(True)
+        self._start_time = time.time()
+        self._timer.start()
+
+        output_dir = os.path.join(".", "output")
+
+        # Create event bus + bridge
+        bus = PipelineEventBus()
+        bridge = EventBridge(self)
+        bus.subscribe(bridge.on_event)
+
+        # Connect bridge to pipeline view
+        self._pipeline_view.connect_bridge(bridge)
+        self._pipeline_view.set_work_dir(os.path.abspath(output_dir))
+
+        # Connect completion signals
+        bridge.pipeline_complete.connect(self._on_pipeline_done)
+
+        # Create and start worker
+        self._worker = PipelineWorker(
+            request=request,
+            provider=self._config.provider,
+            model=self._config.model,
+            event_bus=bus,
+            output_dir=output_dir,
+            api_key=self._config.api_key,
+            base_url=self._config.base_url,
+            proxy=self._config.proxy,
+            timeout=self._config.timeout,
+            python_path=self._config.python_path,
+            parent=self,
+        )
+        self._worker.error_occurred.connect(self._on_pipeline_error)
+        self._worker.start()
+
+    @Slot()
+    def _on_stop(self) -> None:
+        if self._worker and self._worker.isRunning():
+            self._worker.terminate()
+            self._worker.wait(3000)
+        self._reset_run_ui()
+
+    @Slot(dict)
+    def _on_pipeline_done(self, stats: dict) -> None:
+        self._reset_run_ui()
+        tests = stats.get("tests_passed", "N/A")
+        total_time = stats.get("total_time", "")
+        self.statusBar().showMessage(
+            f"Pipeline complete | Tests: {tests} | Time: {total_time}",
+            10000,
+        )
+
+    @Slot(str)
+    def _on_pipeline_error(self, error: str) -> None:
+        self._reset_run_ui()
+        QMessageBox.critical(self, "Pipeline Error", error)
+
+    def _reset_run_ui(self) -> None:
+        self._timer.stop()
+        self._run_btn.show()
+        self._stop_btn.hide()
+        self._request_input.setReadOnly(False)
+
+    @Slot()
+    def _update_elapsed(self) -> None:
+        elapsed = int(time.time() - self._start_time)
+        minutes = elapsed // 60
+        seconds = elapsed % 60
+        self._time_label.setText(f"Elapsed: {minutes}m {seconds:02d}s")
+
+    @Slot()
+    def _open_setup_wizard(self) -> None:
+        from zhushou.gui.wizard_dialog import SetupWizardDialog
+
+        dialog = SetupWizardDialog(self._config, parent=self)
+        if dialog.exec():
+            self._config = dialog.get_config()
+            self._config.first_run_complete = True
+            self._config.save()
+            self._provider_label.setText(f"Provider: {self._config.provider}")
+            self._model_label.setText(
+                f"Model: {self._config.model or '(auto)'}"
+            )
+
+    @Slot()
+    def _clear_output(self) -> None:
+        self._pipeline_view.clear()

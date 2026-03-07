@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ZhuShou - AI Development Assistant</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+    <!-- Top bar -->
+    <header class="top-bar">
+        <div class="logo">
+            <span class="logo-text">ZhuShou</span>
+            <span class="logo-sub">AI Development Assistant</span>
+        </div>
+        <div class="input-area">
+            <input type="text" id="requestInput"
+                   placeholder="Describe the project you want to build..."
+                   autocomplete="off">
+            <button id="runBtn" class="btn btn-primary">Run Pipeline</button>
+            <button id="stopBtn" class="btn btn-danger" style="display:none">Stop</button>
+        </div>
+        <div class="status-area">
+            <span id="providerLabel" class="status-chip">--</span>
+            <span id="timerLabel" class="status-chip">00:00</span>
+        </div>
+    </header>
+
+    <!-- Main content -->
+    <main class="main-content">
+        <!-- Stage sidebar -->
+        <aside class="sidebar" id="stageSidebar">
+            <h3 class="sidebar-title">Pipeline Stages</h3>
+            <div id="stageList" class="stage-list"></div>
+            <div id="progressLabel" class="progress-label">Waiting to start...</div>
+        </aside>
+
+        <!-- Split panels -->
+        <div class="panels">
+            <!-- Code output panel -->
+            <section class="panel code-panel">
+                <div class="panel-header">
+                    <h3>Code Output</h3>
+                    <span id="fileCount" class="badge">0 files</span>
+                </div>
+                <div class="panel-body code-body">
+                    <div class="file-list-wrapper">
+                        <ul id="fileList" class="file-list"></ul>
+                    </div>
+                    <div class="code-viewer-wrapper">
+                        <div id="filePathLabel" class="file-path">Select a file to view</div>
+                        <pre id="codeViewer" class="code-viewer"></pre>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Thinking / reasoning panel -->
+            <section class="panel thinking-panel">
+                <div class="panel-header">
+                    <h3>Thinking / Reasoning</h3>
+                    <button id="clearThinking" class="btn btn-small">Clear</button>
+                </div>
+                <div class="panel-body">
+                    <div id="thinkingLog" class="thinking-log"></div>
+                </div>
+            </section>
+        </div>
+    </main>
+
+    <!-- Connection status toast -->
+    <div id="toast" class="toast hidden"></div>
+
+    <script src="/app.js"></script>
+</body>
+</html>

@@ -2819,8 +2819,14 @@ class TestSmallModelResilience:
         assert args.timeout == 600
 
     def test_timeout_default_300(self):
-        """Default timeout is 300 when not specified."""
+        """Default timeout is 300 when not specified (after config resolution)."""
         args = _parse_cli_args(["pipeline", "test"])
+        # Raw argparse value is None (meaning "not supplied on CLI")
+        assert args.timeout is None
+        # After config.resolve(), should become the default 300
+        from zhushou.config.manager import ZhuShouConfig
+        config = ZhuShouConfig()
+        config.resolve(args)
         assert args.timeout == 300
 
     def test_timeout_on_all_subcommands(self):
@@ -3632,3 +3638,481 @@ class TestKBPackageExports:
         assert callable(save_kb_config)
         assert isinstance(CHEATSHEETS, dict)
         assert isinstance(DOC_SOURCES, dict)
+
+
+# ===========================================================================
+# Config Manager
+# ===========================================================================
+
+class TestConfigManager:
+    """Tests for zhushou.config.manager.ZhuShouConfig."""
+
+    def test_default_values(self):
+        from zhushou.config.manager import ZhuShouConfig
+        cfg = ZhuShouConfig()
+        assert cfg.provider == "ollama"
+        assert cfg.model == ""
+        assert cfg.timeout == 300
+        assert cfg.first_run_complete is False
+        assert cfg.version == 1
+
+    def test_save_and_load(self, tmp_path):
+        from zhushou.config.manager import ZhuShouConfig
+        path = tmp_path / "config.json"
+        cfg = ZhuShouConfig(provider="openai", model="gpt-4", api_key="sk-test")
+        cfg.save(path)
+        assert path.is_file()
+
+        loaded = ZhuShouConfig.load(path)
+        assert loaded.provider == "openai"
+        assert loaded.model == "gpt-4"
+        assert loaded.api_key == "sk-test"
+
+    def test_load_missing_file_returns_defaults(self, tmp_path):
+        from zhushou.config.manager import ZhuShouConfig
+        path = tmp_path / "does_not_exist.json"
+        cfg = ZhuShouConfig.load(path)
+        assert cfg.provider == "ollama"
+        assert cfg.timeout == 300
+
+    def test_resolve_cli_overrides(self):
+        from argparse import Namespace
+        from zhushou.config.manager import ZhuShouConfig
+        cfg = ZhuShouConfig(provider="ollama", model="llama3")
+        args = Namespace(provider="openai", model=None, api_key=None,
+                         base_url=None, proxy=None, timeout=None)
+        cfg.resolve(args)
+        assert args.provider == "openai"   # CLI wins
+        assert args.model == "llama3"      # config fills in
+        assert args.timeout == 300         # default applied
+
+    def test_resolve_none_cli_gets_config(self):
+        from argparse import Namespace
+        from zhushou.config.manager import ZhuShouConfig
+        cfg = ZhuShouConfig(provider="anthropic", model="claude-3")
+        args = Namespace(provider=None, model=None, api_key=None,
+                         base_url=None, proxy=None, timeout=None)
+        cfg.resolve(args)
+        assert args.provider == "anthropic"
+        assert args.model == "claude-3"
+
+    def test_is_first_run(self):
+        from zhushou.config.manager import ZhuShouConfig
+        cfg = ZhuShouConfig()
+        assert cfg.is_first_run is True
+        cfg.first_run_complete = True
+        assert cfg.is_first_run is False
+
+    def test_to_display_dict_masks_api_key(self):
+        from zhushou.config.manager import ZhuShouConfig
+        cfg = ZhuShouConfig(api_key="sk-1234567890abcdef")
+        d = cfg.to_display_dict()
+        assert d["api_key"] != "sk-1234567890abcdef"
+        assert "****" in d["api_key"]
+
+    def test_update_saves(self, tmp_path):
+        from zhushou.config.manager import ZhuShouConfig
+        path = tmp_path / "config.json"
+        cfg = ZhuShouConfig()
+        cfg.save(path)
+        cfg.update(path, provider="gemini", model="gemini-pro")
+        loaded = ZhuShouConfig.load(path)
+        assert loaded.provider == "gemini"
+        assert loaded.model == "gemini-pro"
+
+    def test_config_path_property(self):
+        from zhushou.config.manager import ZhuShouConfig
+        cfg = ZhuShouConfig()
+        assert cfg.config_path.name == "config.json"
+        assert ".zhushou" in str(cfg.config_path)
+
+    def test_atomic_save_no_corruption(self, tmp_path):
+        """Save should not leave partial files if interrupted."""
+        from zhushou.config.manager import ZhuShouConfig
+        path = tmp_path / "config.json"
+        cfg = ZhuShouConfig(provider="test_provider")
+        cfg.save(path)
+        # .tmp file should be cleaned up
+        assert not (tmp_path / "config.tmp").exists()
+        assert path.is_file()
+
+
+# ===========================================================================
+# Python Discovery
+# ===========================================================================
+
+class TestPythonDiscovery:
+    """Tests for enhanced python_finder.py."""
+
+    def test_discover_all_pythons_returns_list(self):
+        from zhushou.utils.python_finder import discover_all_pythons
+        result = discover_all_pythons()
+        assert isinstance(result, list)
+        assert len(result) >= 1  # at least the current interpreter
+
+    def test_python_interpreter_dataclass(self):
+        from zhushou.utils.python_finder import PythonInterpreter
+        p = PythonInterpreter(
+            path="/usr/bin/python3", version="3.12.0",
+            is_venv=False, is_current=True,
+        )
+        assert p.path == "/usr/bin/python3"
+        assert p.version == "3.12.0"
+        assert p.is_current is True
+
+    def test_current_interpreter_in_results(self):
+        from zhushou.utils.python_finder import discover_all_pythons
+        result = discover_all_pythons()
+        current_found = any(p.is_current for p in result)
+        assert current_found, "Current interpreter should be in results"
+
+    def test_find_python_returns_string(self):
+        from zhushou.utils.python_finder import find_python
+        path = find_python()
+        assert isinstance(path, str)
+        assert len(path) > 0
+
+
+# ===========================================================================
+# Event System
+# ===========================================================================
+
+class TestEventTypes:
+    """Tests for zhushou.events.types."""
+
+    def test_all_event_types_exist(self):
+        from zhushou.events.types import (
+            StageStartEvent, StageCompleteEvent, ThinkingEvent,
+            CodeOutputEvent, ToolCallEvent, ToolResultEvent,
+            TestResultEvent, DebugAttemptEvent, PipelineCompleteEvent,
+            InfoEvent, ErrorEvent,
+        )
+        # All should be importable
+        assert StageStartEvent is not None
+
+    def test_stage_start_event(self):
+        from zhushou.events.types import StageStartEvent
+        e = StageStartEvent(stage_num=1, total_stages=8, stage_name="Requirements")
+        assert e.event_type == "stage_start"
+        assert e.stage_num == 1
+        assert e.total_stages == 8
+        assert e.timestamp > 0
+
+    def test_thinking_event(self):
+        from zhushou.events.types import ThinkingEvent
+        e = ThinkingEvent(stage_num=2, content="I think...")
+        assert e.event_type == "thinking"
+        assert e.content == "I think..."
+
+    def test_tool_call_event_to_dict_truncates(self):
+        from zhushou.events.types import ToolCallEvent
+        long_arg = "x" * 1000
+        e = ToolCallEvent(stage_num=1, tool_name="write_file",
+                          arguments={"content": long_arg})
+        d = e.to_dict()
+        assert len(d["arguments"]["content"]) < 1000
+
+    def test_tool_result_event_to_dict_truncates(self):
+        from zhushou.events.types import ToolResultEvent
+        long_output = "y" * 2000
+        e = ToolResultEvent(stage_num=1, tool_name="run_command",
+                            success=True, output=long_output)
+        d = e.to_dict()
+        assert len(d["output"]) < 2000
+
+    def test_events_are_frozen(self):
+        from zhushou.events.types import InfoEvent
+        e = InfoEvent(message="test")
+        with pytest.raises(AttributeError):
+            e.message = "changed"
+
+    def test_pipeline_complete_event(self):
+        from zhushou.events.types import PipelineCompleteEvent
+        stats = {"stages_completed": 8, "tests_passed": "All passed"}
+        e = PipelineCompleteEvent(stats=stats)
+        assert e.event_type == "pipeline_complete"
+        d = e.to_dict()
+        assert d["stats"]["stages_completed"] == 8
+
+    def test_all_events_have_to_dict(self):
+        from zhushou.events.types import (
+            StageStartEvent, StageCompleteEvent, ThinkingEvent,
+            CodeOutputEvent, ToolCallEvent, ToolResultEvent,
+            TestResultEvent, DebugAttemptEvent, PipelineCompleteEvent,
+            InfoEvent, ErrorEvent,
+        )
+        for cls in [StageStartEvent, StageCompleteEvent, ThinkingEvent,
+                    CodeOutputEvent, ToolCallEvent, ToolResultEvent,
+                    TestResultEvent, DebugAttemptEvent, PipelineCompleteEvent,
+                    InfoEvent, ErrorEvent]:
+            e = cls()
+            d = e.to_dict()
+            assert isinstance(d, dict)
+            assert "event_type" in d
+            assert "timestamp" in d
+
+
+class TestEventBus:
+    """Tests for zhushou.events.bus.PipelineEventBus."""
+
+    def test_subscribe_and_emit(self):
+        from zhushou.events.bus import PipelineEventBus
+        from zhushou.events.types import InfoEvent
+
+        bus = PipelineEventBus()
+        events = []
+        bus.subscribe(lambda e: events.append(e))
+        bus.emit(InfoEvent(message="hello"))
+        assert len(events) == 1
+        assert events[0].message == "hello"
+
+    def test_unsubscribe(self):
+        from zhushou.events.bus import PipelineEventBus
+        from zhushou.events.types import InfoEvent
+
+        bus = PipelineEventBus()
+        events = []
+        cb = lambda e: events.append(e)
+        bus.subscribe(cb)
+        bus.emit(InfoEvent(message="one"))
+        bus.unsubscribe(cb)
+        bus.emit(InfoEvent(message="two"))
+        assert len(events) == 1
+
+    def test_broken_listener_doesnt_crash(self):
+        from zhushou.events.bus import PipelineEventBus
+        from zhushou.events.types import InfoEvent
+
+        bus = PipelineEventBus()
+        events = []
+        bus.subscribe(lambda e: 1 / 0)  # broken
+        bus.subscribe(lambda e: events.append(e))  # healthy
+        bus.emit(InfoEvent(message="test"))
+        assert len(events) == 1  # healthy listener still got the event
+
+    def test_listener_count(self):
+        from zhushou.events.bus import PipelineEventBus
+        bus = PipelineEventBus()
+        assert bus.listener_count == 0
+        cb = lambda e: None
+        bus.subscribe(cb)
+        assert bus.listener_count == 1
+        bus.unsubscribe(cb)
+        assert bus.listener_count == 0
+
+    def test_no_duplicate_subscribe(self):
+        from zhushou.events.bus import PipelineEventBus
+        bus = PipelineEventBus()
+        cb = lambda e: None
+        bus.subscribe(cb)
+        bus.subscribe(cb)
+        assert bus.listener_count == 1
+
+
+# ===========================================================================
+# Orchestrator Event Emission
+# ===========================================================================
+
+class TestOrchestratorEvents:
+    """Tests for event_bus integration in PipelineOrchestrator."""
+
+    def test_init_accepts_event_bus(self):
+        from zhushou.pipeline.orchestrator import PipelineOrchestrator
+        from zhushou.events.bus import PipelineEventBus
+        bus = PipelineEventBus()
+        orch = PipelineOrchestrator(
+            llm_client=MagicMock(), work_dir="/tmp/test_orch_event",
+            event_bus=bus,
+        )
+        assert orch.event_bus is bus
+
+    def test_init_event_bus_defaults_none(self):
+        from zhushou.pipeline.orchestrator import PipelineOrchestrator
+        orch = PipelineOrchestrator(
+            llm_client=MagicMock(), work_dir="/tmp/test_orch_none",
+        )
+        assert orch.event_bus is None
+
+    def test_emit_noop_when_no_bus(self):
+        from zhushou.pipeline.orchestrator import PipelineOrchestrator
+        from zhushou.events.types import InfoEvent
+        orch = PipelineOrchestrator(
+            llm_client=MagicMock(), work_dir="/tmp/test_emit_noop",
+        )
+        # Should not raise
+        orch._emit(InfoEvent(message="test"))
+
+    def test_emit_sends_to_bus(self):
+        from zhushou.pipeline.orchestrator import PipelineOrchestrator
+        from zhushou.events.bus import PipelineEventBus
+        from zhushou.events.types import InfoEvent
+        bus = PipelineEventBus()
+        events = []
+        bus.subscribe(lambda e: events.append(e))
+        orch = PipelineOrchestrator(
+            llm_client=MagicMock(), work_dir="/tmp/test_emit_sends",
+            event_bus=bus,
+        )
+        orch._emit(InfoEvent(message="hello"))
+        assert len(events) == 1
+        assert events[0].message == "hello"
+
+
+# ===========================================================================
+# GUI Module Imports (PySide6)
+# ===========================================================================
+
+class TestGUIImports:
+    """Verify all GUI modules import without error."""
+
+    def test_styles_import(self):
+        from zhushou.gui.styles import Colors, Fonts, STYLESHEET
+        assert len(STYLESHEET) > 100
+        assert hasattr(Colors, "ACCENT")
+        assert hasattr(Fonts, "FAMILY_MONO")
+
+    def test_workers_import(self):
+        from zhushou.gui.workers import EventBridge, PipelineWorker
+        assert callable(EventBridge)
+        assert callable(PipelineWorker)
+
+    def test_code_panel_import(self):
+        from zhushou.gui.code_panel import CodePanel
+        assert callable(CodePanel)
+
+    def test_thinking_panel_import(self):
+        from zhushou.gui.thinking_panel import ThinkingPanel
+        assert callable(ThinkingPanel)
+
+    def test_stage_sidebar_import(self):
+        from zhushou.gui.stage_sidebar import StageSidebar
+        assert callable(StageSidebar)
+
+    def test_pipeline_view_import(self):
+        from zhushou.gui.pipeline_view import PipelineView
+        assert callable(PipelineView)
+
+    def test_wizard_dialog_import(self):
+        from zhushou.gui.wizard_dialog import SetupWizardDialog
+        assert callable(SetupWizardDialog)
+
+    def test_main_window_import(self):
+        from zhushou.gui.main_window import MainWindow
+        assert callable(MainWindow)
+
+    def test_app_import(self):
+        from zhushou.gui.app import launch_gui
+        assert callable(launch_gui)
+
+
+# ===========================================================================
+# Web Module Imports (FastAPI)
+# ===========================================================================
+
+class TestWebImports:
+    """Verify all web modules import without error."""
+
+    def test_bridge_import(self):
+        from zhushou.web.bridge import WebEventBridge
+        assert callable(WebEventBridge)
+
+    def test_routes_import(self):
+        from zhushou.web.routes import router, configure
+        assert callable(configure)
+
+    def test_app_import(self):
+        from zhushou.web.app import create_app, launch_web
+        assert callable(create_app)
+        assert callable(launch_web)
+
+    def test_create_app_returns_fastapi(self):
+        from fastapi import FastAPI
+        from zhushou.web.app import create_app
+        from zhushou.config.manager import ZhuShouConfig
+        app = create_app(ZhuShouConfig())
+        assert isinstance(app, FastAPI)
+
+    def test_routes_registered(self):
+        from zhushou.web.app import create_app
+        from zhushou.config.manager import ZhuShouConfig
+        app = create_app(ZhuShouConfig())
+        paths = [r.path for r in app.routes]
+        assert "/" in paths
+        assert "/ws" in paths
+        assert "/api/config" in paths
+        assert "/api/providers" in paths
+
+    def test_static_files_exist(self):
+        from pathlib import Path
+        static = Path("zhushou/web/static")
+        assert (static / "index.html").is_file()
+        assert (static / "style.css").is_file()
+        assert (static / "app.js").is_file()
+
+
+# ===========================================================================
+# Setup Wizard
+# ===========================================================================
+
+class TestSetupWizard:
+    """Tests for zhushou.config.wizard.SetupWizard."""
+
+    def test_wizard_import(self):
+        from zhushou.config.wizard import SetupWizard
+        assert callable(SetupWizard)
+
+    def test_wizard_init_with_default_config(self):
+        from zhushou.config.wizard import SetupWizard
+        from zhushou.config.manager import ZhuShouConfig
+        w = SetupWizard()
+        assert isinstance(w.config, ZhuShouConfig)
+
+    def test_wizard_init_with_custom_config(self):
+        from zhushou.config.wizard import SetupWizard
+        from zhushou.config.manager import ZhuShouConfig
+        cfg = ZhuShouConfig(provider="anthropic")
+        w = SetupWizard(cfg)
+        assert w.config.provider == "anthropic"
+
+
+# ===========================================================================
+# CLI New Flags
+# ===========================================================================
+
+class TestCLINewFlags:
+    """Tests for new CLI flags and subcommands."""
+
+    def test_no_setup_flag_parses(self):
+        args = _parse_cli_args(["pipeline", "test", "--no-setup"])
+        assert args.no_setup is True
+
+    def test_default_provider_is_none(self):
+        """Provider argparse default is None (resolved via config)."""
+        args = _parse_cli_args(["pipeline", "test"])
+        assert args.provider is None
+
+    def test_default_model_is_none(self):
+        """Model argparse default is None (resolved via config)."""
+        args = _parse_cli_args(["pipeline", "test"])
+        assert args.model is None
+
+    def test_explicit_provider_override(self):
+        args = _parse_cli_args(["pipeline", "test", "--provider", "anthropic"])
+        assert args.provider == "anthropic"
+
+    def test_gui_subcommand_exists(self):
+        r = subprocess.run(
+            [sys.executable, "-m", "zhushou", "gui", "--help"],
+            capture_output=True, text=True, timeout=15,
+        )
+        assert r.returncode == 0
+        assert "gui" in r.stdout.lower() or "--help" in r.stdout
+
+    def test_web_subcommand_exists(self):
+        r = subprocess.run(
+            [sys.executable, "-m", "zhushou", "web", "--help"],
+            capture_output=True, text=True, timeout=15,
+        )
+        assert r.returncode == 0
+        assert "--port" in r.stdout
+        assert "--host" in r.stdout

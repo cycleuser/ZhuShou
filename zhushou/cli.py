@@ -36,34 +36,41 @@ def _make_common_parser() -> argparse.ArgumentParser:
     )
     common.add_argument(
         "--provider",
-        default="ollama",
-        help="LLM provider: ollama, openai, anthropic, deepseek, gemini (default: ollama)",
+        default=None,
+        help="LLM provider: ollama, openai, anthropic, deepseek, gemini (default: from config or ollama)",
     )
     common.add_argument(
         "--model", "-m",
-        default="",
-        help="Model name (default: provider default)",
+        default=None,
+        help="Model name (default: from config or provider default)",
     )
     common.add_argument(
         "--api-key",
-        default="",
+        default=None,
+        dest="api_key",
         help="API key for cloud providers",
     )
     common.add_argument(
         "--base-url",
-        default="",
+        default=None,
+        dest="base_url",
         help="Custom API endpoint URL",
     )
     common.add_argument(
         "--proxy",
-        default="",
+        default=None,
         help="HTTP/HTTPS proxy URL (default: disabled, ignores system proxy env vars)",
     )
     common.add_argument(
         "--timeout",
         type=int,
-        default=300,
+        default=None,
         help="LLM request timeout in seconds (default: 300)",
+    )
+    common.add_argument(
+        "--no-setup",
+        action="store_true",
+        help="Skip first-run setup wizard",
     )
     return common
 
@@ -81,10 +88,12 @@ def main(argv: list[str] | None = None) -> None:
 examples:
   zhushou                                  Launch interactive REPL
   zhushou chat "Explain decorators"        Single-turn chat
-  zhushou pipeline "Build Gomoku" -o .     Run 7-stage coding pipeline
+  zhushou pipeline "Build Gomoku" -o .     Run coding pipeline
   zhushou models                           List available models
-  zhushou models --provider openai         List OpenAI models
   zhushou config                           Show configuration
+  zhushou config --setup                   Re-run setup wizard
+  zhushou gui                              Launch desktop GUI
+  zhushou web                              Launch web interface
 """,
     )
     parser.add_argument(
@@ -111,7 +120,7 @@ examples:
     # pipeline subcommand
     pipeline_parser = subparsers.add_parser(
         "pipeline",
-        help="Run the autonomous coding pipeline (7 stages; 9 with --full)",
+        help="Run the autonomous coding pipeline (8 stages; 10 with --full)",
         parents=[common],
     )
     pipeline_parser.add_argument(
@@ -121,7 +130,7 @@ examples:
     pipeline_parser.add_argument(
         "--full",
         action="store_true",
-        help="Run additional documentation and packaging stages (9 stages total)",
+        help="Run additional documentation and packaging stages (10 stages total)",
     )
     pipeline_parser.add_argument(
         "--kb",
@@ -138,10 +147,15 @@ examples:
     )
 
     # config subcommand
-    subparsers.add_parser(
+    config_parser = subparsers.add_parser(
         "config",
         help="Show or edit configuration",
         parents=[common],
+    )
+    config_parser.add_argument(
+        "--setup",
+        action="store_true",
+        help="Re-run the setup wizard",
     )
 
     # kb subcommand group
@@ -162,6 +176,31 @@ examples:
     kb_cs = kb_subs.add_parser("cheatsheet", help="Display built-in cheatsheet")
     kb_cs.add_argument("name", help="Framework name (e.g. numpy, flask)")
 
+    # gui subcommand
+    subparsers.add_parser(
+        "gui",
+        help="Launch PySide6 desktop GUI",
+        parents=[common],
+    )
+
+    # web subcommand
+    web_parser = subparsers.add_parser(
+        "web",
+        help="Launch web interface",
+        parents=[common],
+    )
+    web_parser.add_argument(
+        "--port",
+        type=int,
+        default=8765,
+        help="Web server port (default: 8765)",
+    )
+    web_parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Web server host (default: 127.0.0.1)",
+    )
+
     args = parser.parse_args(argv)
 
     # Configure logging
@@ -170,7 +209,28 @@ examples:
     elif args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
 
+    # ── Config loading + first-run wizard ──────────────────────────
+    from zhushou.config.manager import ZhuShouConfig
+
+    config = ZhuShouConfig.load()
+
+    # First-run wizard (skip for certain commands and flags)
     command = args.command
+    skip_wizard_commands = {"config", "gui", "web", "models", "kb"}
+    if (config.is_first_run
+            and not args.no_setup
+            and command not in skip_wizard_commands):
+        try:
+            from zhushou.config.wizard import SetupWizard
+            wizard = SetupWizard(config)
+            config = wizard.run_cli()
+        except (KeyboardInterrupt, EOFError):
+            print("\nSetup skipped.")
+
+    # Merge stored config into CLI args (CLI args override config)
+    config.resolve(args)
+
+    # ── Dispatch ───────────────────────────────────────────────────
 
     if command == "chat":
         _cmd_chat(args)
@@ -179,9 +239,13 @@ examples:
     elif command == "models":
         _cmd_models(args)
     elif command == "config":
-        _cmd_config(args)
+        _cmd_config(args, config)
     elif command == "kb":
         _cmd_kb(args)
+    elif command == "gui":
+        _cmd_gui(args, config)
+    elif command == "web":
+        _cmd_web(args, config)
     else:
         # No subcommand -> interactive REPL
         _cmd_interactive(args)
@@ -207,7 +271,7 @@ def _resolve_model(args: argparse.Namespace) -> str:
         kwargs["api_key"] = args.api_key
     if args.proxy:
         kwargs["proxy"] = args.proxy
-    if hasattr(args, "timeout") and args.timeout != 300:
+    if hasattr(args, "timeout") and args.timeout and args.timeout != 300:
         kwargs["timeout"] = args.timeout
 
     client = LLMClientFactory.create_client(args.provider, **kwargs)
@@ -241,11 +305,11 @@ def _cmd_chat(args: argparse.Namespace) -> None:
         args.message,
         provider=args.provider,
         model=model,
-        api_key=args.api_key,
-        base_url=args.base_url,
+        api_key=args.api_key or "",
+        base_url=args.base_url or "",
         work_dir=args.output or ".",
-        proxy=args.proxy,
-        timeout=args.timeout,
+        proxy=args.proxy or "",
+        timeout=args.timeout or 300,
     )
 
     if args.json_output:
@@ -269,11 +333,11 @@ def _cmd_pipeline(args: argparse.Namespace) -> None:
         output_dir=output_dir,
         provider=args.provider,
         model=model,
-        api_key=args.api_key,
-        base_url=args.base_url,
-        proxy=args.proxy,
+        api_key=args.api_key or "",
+        base_url=args.base_url or "",
+        proxy=args.proxy or "",
         full=args.full,
-        timeout=args.timeout,
+        timeout=args.timeout or 300,
         kb=args.kb,
     )
 
@@ -321,26 +385,31 @@ def _cmd_models(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
-def _cmd_config(args: argparse.Namespace) -> None:
+def _cmd_config(args: argparse.Namespace, config: object = None) -> None:
     """Handle the config subcommand."""
-    from zhushou.utils.constants import DATA_DIR, CONFIG_FILE
-    import json as _json
+    from zhushou.config.manager import ZhuShouConfig
 
-    if CONFIG_FILE.exists():
-        data = _json.loads(CONFIG_FILE.read_text())
-    else:
-        data = {}
+    if config is None:
+        config = ZhuShouConfig.load()
+
+    # --setup flag: re-run wizard
+    if getattr(args, "setup", False):
+        from zhushou.config.wizard import SetupWizard
+        wizard = SetupWizard(config)
+        try:
+            wizard.run_cli()
+        except (KeyboardInterrupt, EOFError):
+            print("\nSetup cancelled.")
+        return
 
     if args.json_output:
-        print(_json.dumps(data, ensure_ascii=False, indent=2))
+        print(json.dumps(config.to_display_dict(), ensure_ascii=False, indent=2))
     else:
-        print(f"Config directory: {DATA_DIR}")
-        print(f"Config file: {CONFIG_FILE}")
-        if data:
-            for k, v in data.items():
-                print(f"  {k}: {v}")
-        else:
-            print("  (no configuration set)")
+        print(f"Config directory: {config.config_path.parent}")
+        print(f"Config file: {config.config_path}")
+        d = config.to_display_dict()
+        for k, v in d.items():
+            print(f"  {k}: {v}")
 
 
 def _cmd_kb(args: argparse.Namespace) -> None:
@@ -410,6 +479,38 @@ def _cmd_kb(args: argparse.Namespace) -> None:
         print("Run 'zhushou kb --help' for details.")
 
 
+def _cmd_gui(args: argparse.Namespace, config: object = None) -> None:
+    """Launch the PySide6 desktop GUI."""
+    try:
+        from zhushou.gui.app import launch_gui
+        launch_gui(config=config)
+    except ImportError:
+        print(
+            "Error: PySide6 is required for GUI mode.\n"
+            "Install with: pip install zhushou[gui]  or  pip install PySide6",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
+def _cmd_web(args: argparse.Namespace, config: object = None) -> None:
+    """Launch the FastAPI web interface."""
+    try:
+        from zhushou.web.app import launch_web
+        launch_web(
+            host=getattr(args, "host", "127.0.0.1"),
+            port=getattr(args, "port", 8765),
+            config=config,
+        )
+    except ImportError:
+        print(
+            "Error: fastapi and uvicorn are required for web mode.\n"
+            "Install with: pip install zhushou[web]  or  pip install fastapi uvicorn",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
 def _cmd_interactive(args: argparse.Namespace) -> None:
     """Launch the interactive REPL."""
     try:
@@ -433,7 +534,7 @@ def _cmd_interactive(args: argparse.Namespace) -> None:
             kwargs["api_key"] = args.api_key
         if args.proxy:
             kwargs["proxy"] = args.proxy
-        if hasattr(args, "timeout") and args.timeout != 300:
+        if hasattr(args, "timeout") and args.timeout and args.timeout != 300:
             kwargs["timeout"] = args.timeout
         kwargs["model"] = model
 

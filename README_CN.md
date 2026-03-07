@@ -1,13 +1,19 @@
 # ZhuShou (助手) - AI 驱动的开发助手
 
-一个 AI 驱动的开发助手，支持多模型 LLM、三层记忆系统、工具执行和自主 7 阶段编程流水线。
+一个 AI 驱动的开发助手，支持多模型 LLM、三种界面（CLI、桌面 GUI、Web）、自主 8 阶段编程流水线、三层记忆系统和持久化配置。
 
 ## 功能特点
 
 - **多提供商 LLM 支持** - Ollama、OpenAI、Anthropic、DeepSeek、Gemini、LM Studio、vLLM
 - **交互式 REPL** - 流式响应和斜杠命令
 - **11 个内置工具** - 文件读写编辑、Shell 命令、glob、grep、搜索、git 操作
-- **7 阶段自主编程流水线** - 需求、架构、任务、实现、测试、调试、验证
+- **8 阶段自主编程流水线** - 需求、架构、任务、函数设计、实现、测试、调试、验证（使用 `--full` 扩展为 10 阶段）
+- **桌面 GUI** - 基于 PySide6，实时流水线可视化、语法高亮代码查看器、Catppuccin Mocha 暗色主题
+- **Web 界面** - FastAPI + 原生 JS，地址 `http://127.0.0.1:8765`，通过 WebSocket 实时事件推送，无需构建步骤
+- **首次运行设置向导** - 自动发现 Python 解释器，引导选择提供商和模型（CLI 和 GUI 模式）
+- **持久化配置** - 设置存储在 `~/.zhushou/config.json`，CLI 参数始终覆盖存储的值
+- **事件驱动架构** - 线程安全的发布/订阅事件总线，13 种事件类型驱动实时 UI 更新
+- **知识库** - 下载、索引和搜索框架文档；内置速查表；通过 `--kb` 注入流水线上下文
 - **三层记忆系统** - 持久化 JSON 键值存储、JSONL 对话日志、ChromaDB 向量搜索
 - **上下文窗口管理** - 使用超过 80% 预算时自动压缩
 - **Token 追踪和成本估算** - 按提供商/模型计算
@@ -20,6 +26,11 @@
 - Python >= 3.10
 - httpx（必需）
 - rich（必需）
+
+可选依赖：
+- PySide6（桌面 GUI）
+- FastAPI + uvicorn（Web 界面）
+- ChromaDB（向量搜索）
 
 ## 安装
 
@@ -48,6 +59,12 @@ pip install zhushou[openai]
 pip install zhushou[anthropic]
 pip install zhushou[gemini]
 
+# 安装桌面 GUI（PySide6）
+pip install zhushou[gui]
+
+# 安装 Web 界面（FastAPI + uvicorn）
+pip install zhushou[web]
+
 # 安装全部依赖
 pip install zhushou[all]
 ```
@@ -63,14 +80,32 @@ zhushou
 # 单轮对话
 zhushou chat "解释 Python 装饰器"
 
-# 运行 7 阶段自主流水线
+# 运行 8 阶段自主流水线
 zhushou pipeline "开发一个五子棋游戏" -o ./output
+
+# 运行完整 10 阶段流水线（添加文档 + 打包阶段）
+zhushou pipeline "用 Flask 开发一个 API" --full -o ./api
+
+# 使用知识库上下文运行流水线
+zhushou pipeline "用 Flask 开发一个 API" --kb flask -o ./api
+
+# 启动桌面 GUI
+zhushou gui
+
+# 启动 Web 界面
+zhushou web
 
 # 列出可用模型
 zhushou models
 
 # 显示配置
 zhushou config
+
+# 重新运行设置向导
+zhushou config --setup
+
+# 知识库管理
+zhushou kb list
 
 # 显示版本
 zhushou -V
@@ -96,15 +131,20 @@ zhushou [选项] [命令]
 | `--api-key` | | 云服务 API 密钥 |
 | `--base-url` | | 自定义 API 端点 URL |
 | `--proxy` | | HTTP/HTTPS 代理 URL（默认：禁用） |
+| `--timeout` | | LLM 请求超时时间（秒，默认：300） |
+| `--no-setup` | | 跳过首次运行设置向导 |
 
 ### 子命令
 
 | 命令 | 说明 |
 |------|------|
 | `chat` | 向助手发送消息 |
-| `pipeline` | 运行 7 阶段自主编程流水线 |
+| `pipeline` | 运行 8 阶段自主编程流水线（使用 `--full` 扩展为 10 阶段） |
 | `models` | 列出各提供商的可用模型 |
-| `config` | 显示或编辑配置 |
+| `config` | 显示配置；`--setup` 重新运行向导 |
+| `gui` | 启动 PySide6 桌面 GUI |
+| `web` | 启动 Web 界面（`--port`、`--host`） |
+| `kb` | 知识库管理（list、download、index、search） |
 
 ### 交互式 REPL 命令
 
@@ -141,20 +181,119 @@ zhushou --provider deepseek --api-key sk-...
 zhushou --provider openai --base-url http://localhost:8080/v1
 ```
 
-## 自主编程流水线
+## 桌面 GUI
 
-7 阶段流水线从文本描述生成完整项目：
-
-1. **需求分析** - 分析请求，生成规格说明
-2. **架构设计** - 设计文件结构和模块布局
-3. **任务拆解** - 创建有序的实现任务列表
-4. **代码实现** - 逐文件编写代码
-5. **测试生成** - 生成并运行测试
-6. **调试修复** - 修复失败的测试（最多 5 次重试）
-7. **最终验证** - 最后检查和总结
+启动基于 PySide6 的桌面 GUI，获得图形化流水线体验：
 
 ```bash
+pip install zhushou[gui]
+zhushou gui
+```
+
+GUI 提供编程流水线的实时视图，采用 Catppuccin Mocha 暗色主题：
+
+- **顶部栏** - 请求文本输入框、运行/停止按钮、提供商和模型状态
+- **阶段侧边栏**（左侧，200-280px）- 流水线阶段进度及状态指示器：
+  - ○ 等待中  ● 运行中  ✓ 已完成  ✗ 错误
+- **代码面板**（右上方，约 60%）- 文件列表和语法高亮的 Python 代码查看器
+- **思考面板**（右下方，约 40%）- 实时 LLM 推理、工具调用、测试结果
+- **状态栏** - 提供商、模型、已用时间
+
+首次启动时，**设置向导对话框** 将引导你完成 4 个步骤：Python 解释器选择、LLM 提供商选择、API 密钥输入（本地提供商如 Ollama 会跳过）和模型选择。
+
+## Web 界面
+
+启动 FastAPI Web 界面，通过浏览器访问：
+
+```bash
+pip install zhushou[web]
+zhushou web [--port PORT] [--host HOST]
+```
+
+默认地址：`http://127.0.0.1:8765`
+
+Web 界面提供与桌面 GUI 相同的分栏布局（侧边栏 + 代码面板 + 思考面板），使用相同的 Catppuccin Mocha 暗色主题。通过 WebSocket 实时推送更新。无需构建步骤——前端使用原生 HTML/CSS/JS，由 FastAPI 直接提供服务。
+
+### API 端点
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/api/config` | GET | 当前配置（API 密钥已脱敏） |
+| `/api/providers` | GET | 可用 LLM 提供商 |
+| `/api/models` | GET | 当前提供商的可用模型 |
+| `/api/pipeline` | POST | 启动流水线运行（`{"request": "..."}`） |
+| `/ws` | WebSocket | 实时事件流 |
+
+## 配置与设置向导
+
+ZhuShou 将配置存储在 `~/.zhushou/config.json`。首次启动时，设置向导自动运行以配置：
+
+1. **Python 解释器** - 自动从 PATH、pyenv 和 conda 环境中发现解释器
+2. **LLM 提供商** - 从可用提供商中选择（Ollama、OpenAI、Anthropic 等）
+3. **API 密钥** - 输入云服务提供商的 API 密钥（本地提供商跳过此步骤）
+4. **模型** - 从提供商的可用模型列表中选择
+
+重新运行向导：`zhushou config --setup`
+
+跳过向导：`zhushou --no-setup`
+
+CLI 参数始终覆盖存储的配置值。
+
+| 字段 | 说明 | 默认值 |
+|------|------|--------|
+| `python_path` | Python 解释器路径 | （自动检测） |
+| `provider` | LLM 提供商 | `ollama` |
+| `model` | 模型名称 | （设置时选择） |
+| `api_key` | 云服务 API 密钥 | （空） |
+| `base_url` | 自定义 API 端点 | （空） |
+| `proxy` | HTTP 代理 URL | （空） |
+| `timeout` | 请求超时时间（秒） | `300` |
+
+## 自主编程流水线
+
+8 阶段流水线从文本描述生成完整项目：
+
+1. **需求分析** - 分析请求，生成规格说明
+2. **架构设计** - 设计文件结构、模块布局，搭建项目脚手架
+3. **任务拆解** - 创建有序的实现任务列表
+4. **函数设计** - 详细的函数级签名和依赖关系
+5. **代码实现** - 逐文件编写代码
+6. **测试生成** - 生成并运行测试
+7. **调试修复** - 修复失败的测试（最多 5 次重试，含验证-调试反馈循环）
+8. **最终验证** - 最后检查、导入验证和总结报告
+
+使用 `--full` 可添加两个额外阶段：
+
+9. **文档生成** - 生成 README.md、README_CN.md、requirements.txt
+10. **打包发布** - 生成 pyproject.toml、上传脚本、帮助截图生成器
+
+```bash
+# 标准 8 阶段流水线
 zhushou pipeline "用 Flask 开发一个 REST API" -o ./my_api
+
+# 完整 10 阶段流水线
+zhushou pipeline "开发一个五子棋游戏" --full -o ./game
+
+# 使用知识库上下文的流水线
+zhushou pipeline "用 Flask 开发一个应用" --kb flask -o ./app
+```
+
+## 知识库
+
+下载、索引和搜索官方框架文档，用作流水线上下文：
+
+| 命令 | 说明 |
+|------|------|
+| `zhushou kb list` | 列出可用的文档源及其下载/索引状态 |
+| `zhushou kb download <source>` | 下载指定框架的官方文档 |
+| `zhushou kb index <source>` | 将已下载的文档索引到向量数据库 |
+| `zhushou kb search <query>` | 搜索已索引的知识库 |
+| `zhushou kb cheatsheet <name>` | 显示内置速查表 |
+
+通过 `--kb` 标志将知识库上下文注入流水线运行：
+
+```bash
+zhushou pipeline "开发一个数据可视化应用" --kb numpy matplotlib -o ./viz
 ```
 
 ## 记忆系统
@@ -194,6 +333,30 @@ EOF
 ```
 ZhuShou/
 ├── zhushou/                # 主包
+│   ├── config/            # 持久化配置
+│   │   ├── manager.py         # ZhuShouConfig 数据类 + JSON 读写
+│   │   └── wizard.py          # 首次运行设置向导（CLI + GUI）
+│   ├── events/            # 事件系统
+│   │   ├── types.py           # 13 个冻结事件数据类
+│   │   └── bus.py             # 线程安全的 PipelineEventBus
+│   ├── gui/               # 桌面 GUI（PySide6）
+│   │   ├── app.py             # 应用入口
+│   │   ├── main_window.py     # 主窗口（1400x850）
+│   │   ├── pipeline_view.py   # 分栏视图容器
+│   │   ├── stage_sidebar.py   # 阶段进度侧边栏
+│   │   ├── code_panel.py      # 文件列表 + 语法高亮查看器
+│   │   ├── thinking_panel.py  # LLM 推理显示
+│   │   ├── wizard_dialog.py   # 设置向导对话框（4 页）
+│   │   ├── workers.py         # QThread 流水线工作线程 + EventBridge
+│   │   └── styles.py          # Catppuccin Mocha 主题 + QSS
+│   ├── web/               # Web 界面（FastAPI）
+│   │   ├── app.py             # FastAPI 工厂 + uvicorn 启动器
+│   │   ├── routes.py          # REST + WebSocket 端点
+│   │   ├── bridge.py          # 事件总线 -> WebSocket 桥接
+│   │   └── static/            # 原生 JS 前端
+│   │       ├── index.html
+│   │       ├── style.css
+│   │       └── app.js
 │   ├── llm/               # LLM 提供商抽象层
 │   │   ├── base.py             # BaseLLMClient 抽象类 + 数据类
 │   │   ├── ollama_client.py    # Ollama 提供商
@@ -214,14 +377,25 @@ ZhuShou/
 │   │   ├── persistent.py       # JSON 键值存储
 │   │   ├── conversation_log.py # JSONL 日志
 │   │   └── vector_store.py     # ChromaDB / numpy 回退
+│   ├── knowledge/         # 知识库子系统
+│   │   ├── kb_manager.py       # 高层门面
+│   │   ├── kb_config.py        # 知识库配置
+│   │   ├── doc_sources.py      # 官方文档源定义
+│   │   ├── doc_manager.py      # 文档下载器
+│   │   ├── indexer.py          # 向量数据库索引器
+│   │   ├── retriever.py        # RAG 搜索
+│   │   └── cheatsheets.py      # 内置速查表
 │   ├── pipeline/          # 自主流水线
-│   │   ├── stages.py           # 7 个阶段定义
-│   │   └── orchestrator.py     # 流水线运行器
+│   │   ├── stages.py           # 8 个核心 + 2 个完整模式阶段
+│   │   ├── orchestrator.py     # 流水线运行器（含事件发射）
+│   │   └── function_design.py  # 函数级设计解析器
 │   ├── display/           # Rich 控制台输出
 │   ├── persona/           # Persona 加载器
 │   ├── tracking/          # Token 使用追踪
 │   ├── git/               # Git 操作
-│   ├── utils/             # 常量、Python 查找
+│   ├── utils/             # 工具函数
+│   │   ├── constants.py        # 项目常量
+│   │   └── python_finder.py    # 多源 Python 发现
 │   ├── api.py             # 统一 Python API
 │   ├── tools.py           # OpenAI 函数调用格式
 │   └── cli.py             # CLI 入口
@@ -291,4 +465,4 @@ result = dispatch(
 
 ## 许可证
 
-MIT License
+GPLv3 许可证

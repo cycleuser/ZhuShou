@@ -5,9 +5,9 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "zhushou"
 dynamic = ["version"]
-description = "AI-powered development assistant with multi-model support, memory system, and autonomous coding pipeline"
+description = "AI-powered development assistant with multi-model support, desktop GUI, web interface, and autonomous coding pipeline"
 readme = "README.md"
-license = {text = "MIT"}
+license = {text = "GPL-3.0-or-later"}
 requires-python = ">=3.10"
 authors = [{name = "cycleuser"}]
 keywords = [
@@ -17,7 +17,7 @@ keywords = [
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
+    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
@@ -40,7 +40,12 @@ all = [
     "openai>=1.0",
     "anthropic>=0.20",
     "google-generativeai>=0.3",
+    "PySide6>=6.5",
+    "fastapi>=0.100",
+    "uvicorn>=0.23",
 ]
+gui = ["PySide6>=6.5"]
+web = ["fastapi>=0.100", "uvicorn>=0.23"]
 dev = ["pytest>=7.0"]
 
 [project.scripts]

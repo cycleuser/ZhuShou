@@ -15,6 +15,21 @@ import re
 import time
 from typing import Any
 
+from zhushou.events.bus import PipelineEventBus
+from zhushou.events.types import (
+    CodeOutputEvent,
+    DebugAttemptEvent,
+    ErrorEvent,
+    InfoEvent,
+    PipelineCompleteEvent,
+    PipelineEvent,
+    StageCompleteEvent,
+    StageStartEvent,
+    TestResultEvent,
+    ThinkingEvent,
+    ToolCallEvent,
+    ToolResultEvent,
+)
 from zhushou.executor.tool_executor import ToolExecutor
 from zhushou.pipeline.function_design import FunctionRegistry, parse_function_design
 from zhushou.pipeline.stages import ALL_STAGES, FULL_STAGES, Stage, build_user_prompt
@@ -36,11 +51,13 @@ class PipelineOrchestrator:
         python_path: str = "",
         full_mode: bool = False,
         kb_collections: list[str] | None = None,
+        event_bus: PipelineEventBus | None = None,
     ) -> None:
         self.llm_client = llm_client
         self.work_dir = os.path.abspath(work_dir)
         self.python_path = python_path or "python3"
         self.full_mode = full_mode
+        self.event_bus = event_bus
         self.executor = ToolExecutor(work_dir=self.work_dir)
 
         # Knowledge base
@@ -73,6 +90,11 @@ class PipelineOrchestrator:
         }
 
     # ── Public API ─────────────────────────────────────────────────────
+
+    def _emit(self, event: PipelineEvent) -> None:
+        """Emit an event if an event bus is attached."""
+        if self.event_bus is not None:
+            self.event_bus.emit(event)
 
     def run(self, user_request: str) -> dict[str, Any]:
         """Execute the full autonomous pipeline and return stats."""
@@ -114,17 +136,27 @@ class PipelineOrchestrator:
                 continue
 
             self._show_stage_header(stage_num, total_stages, stage.name)
+            self._emit(StageStartEvent(
+                stage_num=stage_num, total_stages=total_stages,
+                stage_name=stage.name,
+            ))
+            stage_start = time.time()
             user_prompt = build_user_prompt(i, user_request, self.context)
 
             response = self._run_stage_with_tools(
                 system_prompt=stage.system_prompt,
                 user_prompt=user_prompt,
                 temperature=stage.temperature,
+                stage_num=stage_num,
             )
 
             # Store context for downstream stages
             self._store_context(i, response)
             self.stats["stages_completed"] += 1
+            self._emit(StageCompleteEvent(
+                stage_num=stage_num, stage_name=stage.name,
+                duration_seconds=time.time() - stage_start,
+            ))
 
         # Auto-commit if tests all passed
         if self.stats.get("tests_passed") == "All passed":
@@ -139,6 +171,7 @@ class PipelineOrchestrator:
         self.stats["file_list"] = list(self.executor.files_created)
 
         self._show_summary()
+        self._emit(PipelineCompleteEvent(stats=dict(self.stats)))
         return self.stats
 
     # ── Stage execution with tool loop ─────────────────────────────────
@@ -148,8 +181,9 @@ class PipelineOrchestrator:
         system_prompt: str,
         user_prompt: str,
         temperature: float,
+        stage_num: int = 0,
     ) -> str:
-        """Run a single stage, handling the LLM ↔ tool conversation loop.
+        """Run a single stage, handling the LLM <-> tool conversation loop.
 
         Returns the concatenated response text from all turns.
         """
@@ -170,6 +204,10 @@ class PipelineOrchestrator:
 
             content = getattr(response, "content", "") or ""
             all_response_text.append(content)
+
+            # Emit thinking event for LLM response text
+            if content.strip():
+                self._emit(ThinkingEvent(stage_num=stage_num, content=content))
 
             # Check for tool calls
             tool_calls = getattr(response, "tool_calls", None) or []
@@ -211,8 +249,33 @@ class PipelineOrchestrator:
                     args = {}
 
                 self._show_tool_call(tc.name, args)
+                self._emit(ToolCallEvent(
+                    stage_num=stage_num, tool_name=tc.name, arguments=args,
+                ))
                 result = self.executor.execute(tc.name, args)
                 self._show_tool_result(result)
+
+                # Extract success/output for event emission
+                if isinstance(result, dict):
+                    _success = result.get("success", False)
+                    _output = result.get("output", str(result))
+                else:
+                    _success = getattr(result, "success", False)
+                    _output = getattr(result, "output", str(result))
+                self._emit(ToolResultEvent(
+                    stage_num=stage_num, tool_name=tc.name,
+                    success=_success, output=_output,
+                ))
+
+                # Emit CodeOutputEvent for file-writing tools
+                if tc.name in ("write_file", "edit_file"):
+                    file_path = args.get("file_path", args.get("path", ""))
+                    action = "create" if tc.name == "write_file" else "edit"
+                    if file_path:
+                        self._emit(CodeOutputEvent(
+                            stage_num=stage_num, file_path=file_path,
+                            action=action,
+                        ))
 
                 # Capture pytest/py_compile output directly from tool result
                 if tc.name == "run_command" and isinstance(result, dict):
@@ -244,13 +307,23 @@ class PipelineOrchestrator:
     ) -> None:
         """Run the debugging stage as a retry loop."""
         self._show_stage_header(stage_num, total_stages, "Debugging")
+        self._emit(StageStartEvent(
+            stage_num=stage_num, total_stages=total_stages,
+            stage_name="Debugging",
+        ))
+        debug_start = time.time()
 
         # If tests already passed in stage 5, skip debugging
         test_output = self.context.get("test_output", "")
         if self._tests_passed(test_output):
             logger.info("All tests passed in testing stage — skipping debug loop.")
             self._show_info("All tests passed in previous stage. Skipping debug loop.")
+            self._emit(InfoEvent(message="All tests passed in previous stage. Skipping debug loop."))
             self.stats["tests_passed"] = "All passed"
+            self._emit(StageCompleteEvent(
+                stage_num=stage_num, stage_name="Debugging",
+                duration_seconds=time.time() - debug_start,
+            ))
             return
 
         debug_stage: Stage = ALL_STAGES[6]  # debugging is index 6 in core stages
@@ -278,6 +351,7 @@ class PipelineOrchestrator:
                 system_prompt=debug_stage.system_prompt,
                 user_prompt=user_prompt,
                 temperature=debug_stage.temperature,
+                stage_num=stage_num,
             )
 
             # Prefer direct tool output over LLM text parsing
@@ -289,12 +363,20 @@ class PipelineOrchestrator:
                     self.context["test_output"] = latest_test_output
 
             passed = self._tests_passed(self.context.get("test_output", ""))
+            self._emit(DebugAttemptEvent(
+                attempt=attempt, max_retries=self.MAX_DEBUG_RETRIES,
+                passed=passed,
+            ))
             if passed:
                 self.stats["tests_passed"] = "All passed"
                 self._show_info(
                     f"Debug attempt {attempt}/{self.MAX_DEBUG_RETRIES}: "
                     "Tests PASSED ✓"
                 )
+                self._emit(StageCompleteEvent(
+                    stage_num=stage_num, stage_name="Debugging",
+                    duration_seconds=time.time() - debug_start,
+                ))
                 return
 
             self._show_info(
@@ -313,7 +395,14 @@ class PipelineOrchestrator:
             f"Tests still failing after {self.MAX_DEBUG_RETRIES} debug attempts. "
             "Proceeding to verification."
         )
+        self._emit(ErrorEvent(
+            message=f"Tests still failing after {self.MAX_DEBUG_RETRIES} debug attempts.",
+        ))
         self.stats["tests_passed"] = "Some failures remain"
+        self._emit(StageCompleteEvent(
+            stage_num=stage_num, stage_name="Debugging",
+            duration_seconds=time.time() - debug_start,
+        ))
 
     # ── Verification ↔ Debug feedback loop ────────────────────────────
 
@@ -326,6 +415,10 @@ class PipelineOrchestrator:
     ) -> str:
         """Run the verification stage once and capture test output."""
         self._show_stage_header(stage_num, total_stages, stage.name)
+        self._emit(StageStartEvent(
+            stage_num=stage_num, total_stages=total_stages,
+            stage_name=stage.name,
+        ))
         self.last_test_output = ""  # reset
 
         user_prompt = build_user_prompt(7, user_request, self.context)
@@ -333,6 +426,7 @@ class PipelineOrchestrator:
             system_prompt=stage.system_prompt,
             user_prompt=user_prompt,
             temperature=stage.temperature,
+            stage_num=stage_num,
         )
 
         # Update context with verification test output
@@ -342,6 +436,14 @@ class PipelineOrchestrator:
             latest = self._find_latest_test_output(response)
             if latest:
                 self.context["test_output"] = latest
+
+        # Emit test result event
+        test_out = self.context.get("test_output", "")
+        self._emit(TestResultEvent(
+            stage_num=stage_num,
+            passed=self._tests_passed(test_out),
+            output=test_out[:1000] if test_out else "",
+        ))
 
         return response
 
@@ -536,6 +638,7 @@ class PipelineOrchestrator:
                 system_prompt=stage.system_prompt,
                 user_prompt=user_prompt,
                 temperature=stage.temperature,
+                stage_num=stage_num,
             )
 
         all_responses: list[str] = []
@@ -553,6 +656,7 @@ class PipelineOrchestrator:
                 system_prompt=stage.system_prompt,
                 user_prompt=sub_prompt,
                 temperature=stage.temperature,
+                stage_num=stage_num,
             )
             all_responses.append(response)
 
@@ -579,12 +683,18 @@ class PipelineOrchestrator:
     ) -> None:
         """Run the Function Design stage and populate the function registry."""
         self._show_stage_header(stage_num, total_stages, stage.name)
+        self._emit(StageStartEvent(
+            stage_num=stage_num, total_stages=total_stages,
+            stage_name=stage.name,
+        ))
+        stage_start = time.time()
         user_prompt = build_user_prompt(3, user_request, self.context)
 
         response = self._run_stage_with_tools(
             system_prompt=stage.system_prompt,
             user_prompt=user_prompt,
             temperature=stage.temperature,
+            stage_num=stage_num,
         )
         self._store_context(3, response)
 
@@ -605,6 +715,10 @@ class PipelineOrchestrator:
         else:
             self._show_info("No function design produced — "
                             "will use file-level implementation.")
+        self._emit(StageCompleteEvent(
+            stage_num=stage_num, stage_name=stage.name,
+            duration_seconds=time.time() - stage_start,
+        ))
 
     # ── Per-function implementation ───────────────────────────────────
 
@@ -640,6 +754,11 @@ class PipelineOrchestrator:
             )
 
         self._show_stage_header(stage_num, total_stages, stage.name)
+        self._emit(StageStartEvent(
+            stage_num=stage_num, total_stages=total_stages,
+            stage_name=stage.name,
+        ))
+        impl_start = time.time()
         file_paths = self.function_registry.file_paths()
 
         if not file_paths:
@@ -726,6 +845,7 @@ class PipelineOrchestrator:
                     system_prompt=stage.system_prompt,
                     user_prompt=sub_prompt,
                     temperature=stage.temperature,
+                    stage_num=stage_num,
                 )
                 all_responses.append(response)
 
@@ -737,6 +857,10 @@ class PipelineOrchestrator:
                 f"{self.function_registry.summary()}"
             )
 
+        self._emit(StageCompleteEvent(
+            stage_num=stage_num, stage_name=stage.name,
+            duration_seconds=time.time() - impl_start,
+        ))
         return "\n".join(all_responses)
 
     # ── Context management ─────────────────────────────────────────────
@@ -769,6 +893,13 @@ class PipelineOrchestrator:
                 or self._find_latest_test_output(response)
                 or response
             )
+            # Emit test result event
+            test_out = self.context["test_output"]
+            self._emit(TestResultEvent(
+                stage_num=stage_index + 1,
+                passed=self._tests_passed(test_out),
+                output=test_out[:1000] if test_out else "",
+            ))
         elif stage_index == 7:
             # Verification: capture test output for potential re-debug
             if self.last_test_output:

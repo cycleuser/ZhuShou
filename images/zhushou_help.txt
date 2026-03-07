@@ -1,16 +1,21 @@
 usage: zhushou [-h] [-v] [--json] [-q] [-o OUTPUT] [--provider PROVIDER]
                [--model MODEL] [--api-key API_KEY] [--base-url BASE_URL]
-               [--proxy PROXY] [-V]
-               {chat,pipeline,models,config} ...
+               [--proxy PROXY] [--timeout TIMEOUT] [--no-setup] [-V]
+               {chat,pipeline,models,config,kb,gui,web} ...
 
 ZhuShou (助手) - AI-powered development assistant
 
 positional arguments:
-  {chat,pipeline,models,config}
+  {chat,pipeline,models,config,kb,gui,web}
     chat                Send a message to the assistant
-    pipeline            Run the 7-stage autonomous coding pipeline
+    pipeline            Run the autonomous coding pipeline (8 stages; 10 with
+                        --full)
     models              List available models across providers
     config              Show or edit configuration
+    kb                  Knowledge base management (list, download, index,
+                        search, cheatsheet)
+    gui                 Launch PySide6 desktop GUI
+    web                 Launch web interface
 
 options:
   -h, --help            show this help message and exit
@@ -20,19 +25,23 @@ options:
   -o OUTPUT, --output OUTPUT
                         Working / output directory
   --provider PROVIDER   LLM provider: ollama, openai, anthropic, deepseek,
-                        gemini (default: ollama)
+                        gemini (default: from config or ollama)
   --model MODEL, -m MODEL
-                        Model name (default: provider default)
+                        Model name (default: from config or provider default)
   --api-key API_KEY     API key for cloud providers
   --base-url BASE_URL   Custom API endpoint URL
   --proxy PROXY         HTTP/HTTPS proxy URL (default: disabled, ignores
                         system proxy env vars)
+  --timeout TIMEOUT     LLM request timeout in seconds (default: 300)
+  --no-setup            Skip first-run setup wizard
   -V, --version         show program's version number and exit
 
 examples:
   zhushou                                  Launch interactive REPL
   zhushou chat "Explain decorators"        Single-turn chat
-  zhushou pipeline "Build Gomoku" -o .     Run 7-stage coding pipeline
+  zhushou pipeline "Build Gomoku" -o .     Run coding pipeline
   zhushou models                           List available models
-  zhushou models --provider openai         List OpenAI models
   zhushou config                           Show configuration
+  zhushou config --setup                   Re-run setup wizard
+  zhushou gui                              Launch desktop GUI
+  zhushou web                              Launch web interface
