@@ -27,6 +27,7 @@ _DEFAULTS: dict[str, Any] = {
     "base_url": "",
     "proxy": "",
     "timeout": 300,
+    "world_sense": True,
 }
 
 
@@ -44,6 +45,7 @@ class ZhuShouConfig:
     base_url: str = ""
     proxy: str = ""
     timeout: int = 300
+    world_sense: bool = True
     first_run_complete: bool = False
     version: int = 1
 
@@ -96,13 +98,14 @@ class ZhuShouConfig:
             "base_url": self.base_url,
             "proxy": self.proxy,
             "timeout": self.timeout,
+            "world_sense": self.world_sense,
         }
 
         for attr, config_val in mapping.items():
             cli_val = getattr(args, attr, None)
             if cli_val is None:
                 # CLI didn't set it → use config value, or built-in default
-                final = config_val if config_val else _DEFAULTS.get(attr, "")
+                final = config_val if config_val is not None and config_val != "" else _DEFAULTS.get(attr, "")
                 setattr(args, attr, final)
 
         # Python path: not a CLI arg, but used by pipeline

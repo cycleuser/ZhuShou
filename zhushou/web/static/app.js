@@ -14,6 +14,7 @@
     const runBtn = document.getElementById("runBtn");
     const stopBtn = document.getElementById("stopBtn");
     const providerLabel = document.getElementById("providerLabel");
+    const worldLabel = document.getElementById("worldLabel");
     const timerLabel = document.getElementById("timerLabel");
     const stageList = document.getElementById("stageList");
     const progressLabel = document.getElementById("progressLabel");
@@ -23,6 +24,11 @@
     const codeViewer = document.getElementById("codeViewer");
     const thinkingLog = document.getElementById("thinkingLog");
     const clearThinkingBtn = document.getElementById("clearThinking");
+    const crawlBtn = document.getElementById("crawlBtn");
+    const uploadBtn = document.getElementById("uploadBtn");
+    const importBtn = document.getElementById("importBtn");
+    const deleteKbBtn = document.getElementById("deleteKbBtn");
+    const uploadFileInput = document.getElementById("uploadFileInput");
     const toast = document.getElementById("toast");
 
     // ── State ─────────────────────────────────────────────────────
@@ -47,6 +53,23 @@
             providerLabel.textContent = "--";
         }
 
+        // Load world context info
+        try {
+            const wres = await fetch("/api/world");
+            const wdata = await wres.json();
+            if (wdata.enabled && wdata.context) {
+                // Extract date line for display
+                const lines = wdata.context.split("\n");
+                const dateLine = lines.find(l => l.startsWith("Current date"));
+                worldLabel.textContent = dateLine || "World: on";
+                worldLabel.classList.add("active");
+            } else {
+                worldLabel.textContent = "World: off";
+            }
+        } catch (e) {
+            worldLabel.textContent = "--";
+        }
+
         runBtn.addEventListener("click", startPipeline);
         stopBtn.addEventListener("click", stopPipeline);
         requestInput.addEventListener("keydown", (e) => {
@@ -55,6 +78,21 @@
         clearThinkingBtn.addEventListener("click", () => {
             thinkingLog.innerHTML = "";
         });
+        if (crawlBtn) {
+            crawlBtn.addEventListener("click", crawlDocs);
+        }
+        if (uploadBtn) {
+            uploadBtn.addEventListener("click", () => uploadFileInput.click());
+        }
+        if (uploadFileInput) {
+            uploadFileInput.addEventListener("change", uploadFiles);
+        }
+        if (importBtn) {
+            importBtn.addEventListener("click", importDirectory);
+        }
+        if (deleteKbBtn) {
+            deleteKbBtn.addEventListener("click", deleteUserKb);
+        }
     }
 
     // ── Pipeline control ──────────────────────────────────────────
@@ -442,6 +480,151 @@
         const div = document.createElement("div");
         div.appendChild(document.createTextNode(text));
         return div.innerHTML;
+    }
+
+    // ── KB Crawl ───────────────────────────────────────────────────
+
+    async function crawlDocs() {
+        const url = prompt("Enter the URL to crawl into knowledge base:");
+        if (!url || !url.trim()) return;
+
+        try {
+            const res = await fetch("/api/kb/crawl", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ url: url.trim() }),
+            });
+            const data = await res.json();
+            if (res.ok) {
+                showToast("Crawl started: " + url.trim(), "success");
+            } else {
+                showToast(data.error || "Crawl failed", "error");
+            }
+        } catch (e) {
+            showToast("Crawl error: " + e.message, "error");
+        }
+    }
+
+    // ── KB Upload ──────────────────────────────────────────────────
+
+    async function uploadFiles() {
+        const fileInput = uploadFileInput;
+        if (!fileInput.files || fileInput.files.length === 0) return;
+
+        const kbName = prompt("Enter a display name for the knowledge base:");
+        if (!kbName || !kbName.trim()) {
+            fileInput.value = "";
+            return;
+        }
+
+        const formData = new FormData();
+        formData.append("kb_name", kbName.trim());
+        formData.append("duplicate_action", "skip");
+        for (const file of fileInput.files) {
+            formData.append("files", file);
+        }
+
+        try {
+            const res = await fetch("/api/kb/upload", {
+                method: "POST",
+                body: formData,
+            });
+            const data = await res.json();
+            if (res.ok && data.success) {
+                showToast(
+                    "Uploaded " + (data.saved || 0) + " file(s) to '" + kbName.trim() + "'",
+                    "success"
+                );
+            } else {
+                showToast(data.error || "Upload failed", "error");
+            }
+        } catch (e) {
+            showToast("Upload error: " + e.message, "error");
+        }
+        fileInput.value = "";
+    }
+
+    // ── KB Import Dir ──────────────────────────────────────────────
+
+    async function importDirectory() {
+        const dirPath = prompt("Enter the local directory path to import:");
+        if (!dirPath || !dirPath.trim()) return;
+
+        const kbName = prompt("Enter a display name for the knowledge base:");
+        if (!kbName || !kbName.trim()) return;
+
+        try {
+            const res = await fetch("/api/kb/import", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ name: kbName.trim(), dir_path: dirPath.trim() }),
+            });
+            const data = await res.json();
+            if (res.ok && data.success) {
+                showToast(
+                    "Imported " + (data.saved || 0) + " file(s) to '" + kbName.trim() + "'",
+                    "success"
+                );
+            } else {
+                showToast(data.error || "Import failed", "error");
+            }
+        } catch (e) {
+            showToast("Import error: " + e.message, "error");
+        }
+    }
+
+    // ── KB Delete ──────────────────────────────────────────────────
+
+    async function deleteUserKb() {
+        // Fetch list of user KBs first
+        let userKbs = [];
+        try {
+            const res = await fetch("/api/kb/user");
+            const data = await res.json();
+            userKbs = data.kbs || [];
+        } catch (e) {
+            showToast("Failed to load KB list: " + e.message, "error");
+            return;
+        }
+
+        if (userKbs.length === 0) {
+            showToast("No user-created knowledge bases found", "error");
+            return;
+        }
+
+        const names = userKbs.map(
+            (kb) => kb.display_name + " (" + kb.key + ")"
+        );
+        const choice = prompt(
+            "Enter the number of the KB to delete:\n" +
+            names.map((n, i) => (i + 1) + ". " + n).join("\n")
+        );
+        if (!choice) return;
+
+        const idx = parseInt(choice, 10) - 1;
+        if (isNaN(idx) || idx < 0 || idx >= userKbs.length) {
+            showToast("Invalid selection", "error");
+            return;
+        }
+
+        const kb = userKbs[idx];
+        if (!confirm("Delete KB '" + kb.display_name + "'? This cannot be undone.")) {
+            return;
+        }
+
+        try {
+            const res = await fetch("/api/kb/" + encodeURIComponent(kb.key), {
+                method: "DELETE",
+            });
+            const data = await res.json();
+            if (res.ok && data.success) {
+                showToast("Deleted KB '" + kb.display_name + "'", "success");
+            } else {
+                showToast(data.error || "Delete failed", "error");
+            }
+        } catch (e) {
+            showToast("Delete error: " + e.message, "error");
+        }
     }
 
     // ── Boot ──────────────────────────────────────────────────────

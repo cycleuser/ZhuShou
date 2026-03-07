@@ -4116,3 +4116,773 @@ class TestCLINewFlags:
         assert r.returncode == 0
         assert "--port" in r.stdout
         assert "--host" in r.stdout
+
+
+# ===========================================================================
+# World Context — get_world_context helper
+# ===========================================================================
+
+class TestWorldContext:
+    """Tests for zhushou.utils.world_context."""
+
+    def test_import(self):
+        from zhushou.utils.world_context import get_world_context
+        assert callable(get_world_context)
+
+    def test_disabled_returns_empty(self):
+        from zhushou.utils.world_context import get_world_context
+        result = get_world_context(enabled=False)
+        assert result == ""
+
+    def test_enabled_returns_string(self):
+        from zhushou.utils.world_context import get_world_context
+        result = get_world_context(enabled=True)
+        # ModelSensor should be installed — so we expect real output
+        assert isinstance(result, str)
+        if result:  # non-empty means modelsensor is available
+            assert "Current date" in result
+            assert "Timezone" in result
+            assert "Weekday" in result
+            assert result.startswith("## Current World State")
+
+    def test_default_enabled(self):
+        from zhushou.utils.world_context import get_world_context
+        result = get_world_context()
+        # Default is enabled=True
+        assert isinstance(result, str)
+
+
+# ===========================================================================
+# Config — world_sense field
+# ===========================================================================
+
+class TestConfigWorldSense:
+    """Tests for world_sense in ZhuShouConfig."""
+
+    def test_default_world_sense_true(self):
+        from zhushou.config.manager import ZhuShouConfig
+        cfg = ZhuShouConfig()
+        assert cfg.world_sense is True
+
+    def test_world_sense_in_defaults(self):
+        from zhushou.config.manager import _DEFAULTS
+        assert "world_sense" in _DEFAULTS
+        assert _DEFAULTS["world_sense"] is True
+
+    def test_world_sense_saves_and_loads(self, tmp_path):
+        from zhushou.config.manager import ZhuShouConfig
+        path = tmp_path / "cfg_ws.json"
+        cfg = ZhuShouConfig(world_sense=False)
+        cfg.save(path)
+        loaded = ZhuShouConfig.load(path)
+        assert loaded.world_sense is False
+
+    def test_resolve_world_sense(self):
+        from argparse import Namespace
+        from zhushou.config.manager import ZhuShouConfig
+        cfg = ZhuShouConfig(world_sense=True)
+        args = Namespace(
+            provider=None, model=None, api_key=None,
+            base_url=None, proxy=None, timeout=None,
+            world_sense=None,
+        )
+        cfg.resolve(args)
+        assert args.world_sense is True
+
+
+# ===========================================================================
+# CLI — --no-world flag
+# ===========================================================================
+
+class TestCLINoWorldFlag:
+    """Tests for --no-world CLI flag."""
+
+    def test_no_world_flag_exists_in_help(self):
+        r = subprocess.run(
+            [sys.executable, "-m", "zhushou", "pipeline", "--help"],
+            capture_output=True, text=True, timeout=15,
+        )
+        assert "--no-world" in r.stdout
+
+    def test_no_world_flag_parses(self):
+        args = _parse_cli_args(["pipeline", "test", "--no-world"])
+        assert args.no_world is True
+
+    def test_no_world_default_false(self):
+        args = _parse_cli_args(["pipeline", "test"])
+        assert args.no_world is False
+
+    def test_no_world_on_chat_subcommand(self):
+        r = subprocess.run(
+            [sys.executable, "-m", "zhushou", "chat", "--help"],
+            capture_output=True, text=True, timeout=15,
+        )
+        assert "--no-world" in r.stdout
+
+
+# ===========================================================================
+# CLI — kb crawl subcommand
+# ===========================================================================
+
+class TestCLIKBCrawl:
+    """Tests for kb crawl subcommand."""
+
+    def test_kb_crawl_in_help(self):
+        r = subprocess.run(
+            [sys.executable, "-m", "zhushou", "kb", "--help"],
+            capture_output=True, text=True, timeout=15,
+        )
+        assert "crawl" in r.stdout
+
+    def test_kb_crawl_help(self):
+        r = subprocess.run(
+            [sys.executable, "-m", "zhushou", "kb", "crawl", "--help"],
+            capture_output=True, text=True, timeout=15,
+        )
+        assert r.returncode == 0
+        assert "url" in r.stdout.lower()
+        assert "--max-pages" in r.stdout
+        assert "--name" in r.stdout
+        assert "--prefix" in r.stdout
+
+
+# ===========================================================================
+# KB Manager — crawl method
+# ===========================================================================
+
+class TestKBManagerCrawl:
+    """Tests for the crawl() method on KBManager."""
+
+    def test_crawl_method_exists(self):
+        from zhushou.knowledge.kb_manager import KBManager
+        assert hasattr(KBManager, "crawl")
+        assert callable(getattr(KBManager, "crawl"))
+
+    def test_crawl_signature(self):
+        import inspect
+        from zhushou.knowledge.kb_manager import KBManager
+        sig = inspect.signature(KBManager.crawl)
+        params = list(sig.parameters.keys())
+        assert "url" in params
+        assert "name" in params
+        assert "max_pages" in params
+        assert "prefix" in params
+
+
+# ===========================================================================
+# API — kb_crawl function
+# ===========================================================================
+
+class TestKBCrawlAPI:
+    """Tests for the kb_crawl API function."""
+
+    def test_kb_crawl_exists(self):
+        from zhushou.api import kb_crawl
+        assert callable(kb_crawl)
+
+    def test_kb_crawl_signature(self):
+        import inspect
+        from zhushou.api import kb_crawl
+        sig = inspect.signature(kb_crawl)
+        params = list(sig.parameters.keys())
+        assert "url" in params
+        assert "name" in params
+        assert "max_pages" in params
+        assert "prefix" in params
+
+    def test_chat_accepts_world_sense(self):
+        import inspect
+        from zhushou.api import chat
+        sig = inspect.signature(chat)
+        assert "world_sense" in sig.parameters
+        assert sig.parameters["world_sense"].default is True
+
+    def test_run_pipeline_accepts_world_sense(self):
+        import inspect
+        from zhushou.api import run_pipeline
+        sig = inspect.signature(run_pipeline)
+        assert "world_sense" in sig.parameters
+        assert sig.parameters["world_sense"].default is True
+
+
+# ===========================================================================
+# Web Routes — new endpoints
+# ===========================================================================
+
+class TestWebNewRoutes:
+    """Tests for /api/world and /api/kb/crawl routes."""
+
+    def test_world_route_registered(self):
+        from zhushou.web.app import create_app
+        from zhushou.config.manager import ZhuShouConfig
+        app = create_app(ZhuShouConfig())
+        paths = [r.path for r in app.routes]
+        assert "/api/world" in paths
+
+    def test_kb_crawl_route_registered(self):
+        from zhushou.web.app import create_app
+        from zhushou.config.manager import ZhuShouConfig
+        app = create_app(ZhuShouConfig())
+        paths = [r.path for r in app.routes]
+        assert "/api/kb/crawl" in paths
+
+
+# ===========================================================================
+# GUI Workers — KBCrawlWorker
+# ===========================================================================
+
+class TestGUIKBCrawlWorker:
+    """Tests for KBCrawlWorker in GUI workers module."""
+
+    def test_kb_crawl_worker_import(self):
+        from zhushou.gui.workers import KBCrawlWorker
+        assert callable(KBCrawlWorker)
+
+    def test_pipeline_worker_accepts_world_sense(self):
+        import inspect
+        from zhushou.gui.workers import PipelineWorker
+        sig = inspect.signature(PipelineWorker.__init__)
+        assert "world_sense" in sig.parameters
+
+
+# ===========================================================================
+# Orchestrator — world_sense parameter
+# ===========================================================================
+
+class TestOrchestratorWorldSense:
+    """Tests for world_sense integration in PipelineOrchestrator."""
+
+    def test_orchestrator_accepts_world_sense(self):
+        import inspect
+        from zhushou.pipeline.orchestrator import PipelineOrchestrator
+        sig = inspect.signature(PipelineOrchestrator.__init__)
+        assert "world_sense" in sig.parameters
+        assert sig.parameters["world_sense"].default is True
+
+    def test_orchestrator_stores_world_sense(self):
+        from zhushou.pipeline.orchestrator import PipelineOrchestrator
+        orch = PipelineOrchestrator(
+            llm_client=MagicMock(),
+            work_dir="/tmp/test_ws",
+            world_sense=False,
+        )
+        assert orch.world_sense is False
+
+    def test_agent_loop_accepts_world_sense(self):
+        import inspect
+        from zhushou.agent.loop import AgentLoop
+        sig = inspect.signature(AgentLoop.__init__)
+        assert "world_sense" in sig.parameters
+        assert sig.parameters["world_sense"].default is True
+
+
+# ===========================================================================
+# Knowledge Base — Expanded Doc Sources (30+)
+# ===========================================================================
+
+class TestExpandedDocSources:
+    """Verify the expanded 30+ doc source registry."""
+
+    def test_minimum_source_count(self):
+        from zhushou.knowledge.doc_sources import DOC_SOURCES
+        # 30 unique + torch alias = 31
+        assert len(DOC_SOURCES) >= 30
+
+    def test_new_python_sources(self):
+        from zhushou.knowledge.doc_sources import DOC_SOURCES
+        for key in ("sklearn", "skimage", "chempy", "jupyter", "tensorflow"):
+            assert key in DOC_SOURCES, f"Missing source: {key}"
+
+    def test_gpu_sources(self):
+        from zhushou.knowledge.doc_sources import DOC_SOURCES
+        for key in ("cuda", "opencl"):
+            assert key in DOC_SOURCES, f"Missing source: {key}"
+
+    def test_language_sources(self):
+        from zhushou.knowledge.doc_sources import DOC_SOURCES
+        for key in ("rust", "javascript", "typescript", "c_lang", "cpp", "go", "html_css"):
+            assert key in DOC_SOURCES, f"Missing source: {key}"
+
+    def test_shell_cli_sources(self):
+        from zhushou.knowledge.doc_sources import DOC_SOURCES
+        for key in ("bash", "zsh", "powershell", "fish", "linux_commands",
+                     "git", "docker", "kubectl"):
+            assert key in DOC_SOURCES, f"Missing source: {key}"
+
+    def test_torch_alias(self):
+        from zhushou.knowledge.doc_sources import DOC_SOURCES
+        assert "torch" in DOC_SOURCES
+        assert "pytorch" in DOC_SOURCES
+        assert DOC_SOURCES["torch"] is DOC_SOURCES["pytorch"]
+
+    def test_all_sources_have_valid_structure(self):
+        from zhushou.knowledge.doc_sources import DOC_SOURCES
+        for key, info in DOC_SOURCES.items():
+            assert "name" in info, f"{key} missing 'name'"
+            assert "urls" in info, f"{key} missing 'urls'"
+            assert isinstance(info["urls"], list), f"{key} urls is not a list"
+            assert len(info["urls"]) > 0, f"{key} has no urls"
+            for url in info["urls"]:
+                assert url.startswith("http"), f"{key} has invalid url: {url}"
+
+
+# ===========================================================================
+# Knowledge Base — Expanded Cheatsheets (30+)
+# ===========================================================================
+
+class TestExpandedCheatsheets:
+    """Verify the expanded 30+ cheatsheet set."""
+
+    def test_minimum_cheatsheet_count(self):
+        from zhushou.knowledge.cheatsheets import CHEATSHEETS
+        assert len(CHEATSHEETS) >= 30
+
+    def test_new_cheatsheets_present(self):
+        from zhushou.knowledge.cheatsheets import CHEATSHEETS
+        new_keys = {
+            "sklearn", "skimage", "chempy", "jupyter", "tensorflow",
+            "cuda", "opencl",
+            "rust", "javascript", "typescript", "c_lang", "cpp", "go", "html_css",
+            "bash", "zsh", "powershell", "fish", "linux_commands",
+            "git", "docker", "kubectl",
+        }
+        for key in new_keys:
+            assert key in CHEATSHEETS, f"Missing cheatsheet: {key}"
+
+    def test_pytorch_alias(self):
+        from zhushou.knowledge.cheatsheets import CHEATSHEETS
+        assert "pytorch" in CHEATSHEETS
+        assert CHEATSHEETS["pytorch"] is CHEATSHEETS["torch"]
+
+    def test_all_cheatsheets_nonempty(self):
+        from zhushou.knowledge.cheatsheets import CHEATSHEETS
+        for name, cs in CHEATSHEETS.items():
+            assert isinstance(cs, str), f"{name} is not str"
+            assert len(cs) >= 100, f"{name} too short ({len(cs)} chars)"
+
+
+# ===========================================================================
+# Knowledge Base — User KB Config Helpers
+# ===========================================================================
+
+class TestUserKBConfig:
+    """Tests for user KB manifest helper functions."""
+
+    def test_sanitize_kb_name_basic(self):
+        from zhushou.knowledge.kb_config import sanitize_kb_name
+        result = sanitize_kb_name("My Python Notes")
+        assert result.startswith("user_")
+        assert "my_python_notes" in result
+
+    def test_sanitize_kb_name_special_chars(self):
+        from zhushou.knowledge.kb_config import sanitize_kb_name
+        result = sanitize_kb_name("C++ Ref! @#$%")
+        assert result.startswith("user_")
+        assert "@" not in result
+        assert "#" not in result
+
+    def test_sanitize_kb_name_short_fallback(self):
+        from zhushou.knowledge.kb_config import sanitize_kb_name
+        result = sanitize_kb_name("ab")
+        assert result.startswith("user_kb_")
+
+    def test_sanitize_kb_name_unicode_fallback(self):
+        from zhushou.knowledge.kb_config import sanitize_kb_name
+        result = sanitize_kb_name("中文名")
+        assert result.startswith("user_kb_")
+
+    def test_user_kbs_path_property(self):
+        from zhushou.knowledge.kb_config import KBConfig
+        cfg = KBConfig(docs_dir="/tmp/test_docs")
+        assert cfg.user_kbs_path.name == "user_kbs.json"
+
+    def test_load_user_kbs_empty(self, tmp_path):
+        from zhushou.knowledge.kb_config import KBConfig, load_user_kbs
+        cfg = KBConfig(docs_dir=str(tmp_path / "docs"))
+        result = load_user_kbs(cfg)
+        assert result == {}
+
+    def test_save_and_load_user_kb(self, tmp_path):
+        from zhushou.knowledge.kb_config import KBConfig, save_user_kb, load_user_kbs
+        cfg = KBConfig(docs_dir=str(tmp_path / "docs"))
+        save_user_kb(cfg, "user_test_kb", "Test KB", 5, ["en"])
+        manifest = load_user_kbs(cfg)
+        assert "user_test_kb" in manifest
+        assert manifest["user_test_kb"]["display_name"] == "Test KB"
+        assert manifest["user_test_kb"]["file_count"] == 5
+        assert manifest["user_test_kb"]["languages"] == ["en"]
+
+    def test_delete_user_kb_entry(self, tmp_path):
+        from zhushou.knowledge.kb_config import (
+            KBConfig, save_user_kb, load_user_kbs, delete_user_kb_entry,
+        )
+        cfg = KBConfig(docs_dir=str(tmp_path / "docs"))
+        save_user_kb(cfg, "user_todelete", "To Delete", 3)
+        assert delete_user_kb_entry(cfg, "user_todelete") is True
+        assert "user_todelete" not in load_user_kbs(cfg)
+
+    def test_delete_user_kb_entry_missing(self, tmp_path):
+        from zhushou.knowledge.kb_config import KBConfig, delete_user_kb_entry
+        cfg = KBConfig(docs_dir=str(tmp_path / "docs"))
+        assert delete_user_kb_entry(cfg, "user_nonexistent") is False
+
+
+# ===========================================================================
+# Knowledge Base — KBManager User KB Methods
+# ===========================================================================
+
+class TestKBManagerUserKB:
+    """Tests for upload_files, import_directory, list_user_kbs, delete_user_kb."""
+
+    def test_upload_files_method_exists(self):
+        from zhushou.knowledge.kb_manager import KBManager
+        assert hasattr(KBManager, "upload_files")
+        assert callable(getattr(KBManager, "upload_files"))
+
+    def test_import_directory_method_exists(self):
+        from zhushou.knowledge.kb_manager import KBManager
+        assert hasattr(KBManager, "import_directory")
+        assert callable(getattr(KBManager, "import_directory"))
+
+    def test_list_user_kbs_method_exists(self):
+        from zhushou.knowledge.kb_manager import KBManager
+        assert hasattr(KBManager, "list_user_kbs")
+
+    def test_delete_user_kb_method_exists(self):
+        from zhushou.knowledge.kb_manager import KBManager
+        assert hasattr(KBManager, "delete_user_kb")
+
+    def test_upload_files_signature(self):
+        import inspect
+        from zhushou.knowledge.kb_manager import KBManager
+        sig = inspect.signature(KBManager.upload_files)
+        params = list(sig.parameters.keys())
+        assert "name" in params
+        assert "file_paths" in params
+        assert "duplicate_action" in params
+
+    def test_import_directory_signature(self):
+        import inspect
+        from zhushou.knowledge.kb_manager import KBManager
+        sig = inspect.signature(KBManager.import_directory)
+        params = list(sig.parameters.keys())
+        assert "name" in params
+        assert "dir_path" in params
+
+    def test_upload_files_integration(self, tmp_path):
+        from zhushou.knowledge.kb_manager import KBManager
+        from zhushou.knowledge.kb_config import KBConfig
+        # Create test files
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "note1.md").write_text("# Note 1\nContent.", encoding="utf-8")
+        (src / "note2.txt").write_text("Note 2 text.", encoding="utf-8")
+        (src / "bad.py").write_text("print('hi')", encoding="utf-8")  # unsupported
+
+        cfg = KBConfig(
+            docs_dir=str(tmp_path / "docs"),
+            chroma_dir=str(tmp_path / "chroma"),
+        )
+        mgr = KBManager(cfg)
+        result = mgr.upload_files(
+            "Test Upload",
+            [str(src / "note1.md"), str(src / "note2.txt"), str(src / "bad.py")],
+        )
+        assert result["saved"] == 2
+        assert len(result["errors"]) == 1  # bad.py unsupported
+        assert result["internal_name"].startswith("user_")
+
+    def test_import_directory_integration(self, tmp_path):
+        from zhushou.knowledge.kb_manager import KBManager
+        from zhushou.knowledge.kb_config import KBConfig
+        # Create directory tree
+        src = tmp_path / "src"
+        sub = src / "sub"
+        sub.mkdir(parents=True)
+        (src / "root.md").write_text("# Root", encoding="utf-8")
+        (sub / "nested.txt").write_text("Nested content.", encoding="utf-8")
+
+        cfg = KBConfig(
+            docs_dir=str(tmp_path / "docs"),
+            chroma_dir=str(tmp_path / "chroma"),
+        )
+        mgr = KBManager(cfg)
+        result = mgr.import_directory("Test Import", str(src))
+        assert result["saved"] == 2
+        assert result["internal_name"].startswith("user_")
+
+    def test_import_directory_nonexistent(self, tmp_path):
+        from zhushou.knowledge.kb_manager import KBManager
+        from zhushou.knowledge.kb_config import KBConfig
+        cfg = KBConfig(
+            docs_dir=str(tmp_path / "docs"),
+            chroma_dir=str(tmp_path / "chroma"),
+        )
+        mgr = KBManager(cfg)
+        result = mgr.import_directory("Bad", "/nonexistent_dir_xyz")
+        assert result["saved"] == 0
+        assert len(result["errors"]) > 0
+
+    def test_list_user_kbs_empty(self, tmp_path):
+        from zhushou.knowledge.kb_manager import KBManager
+        from zhushou.knowledge.kb_config import KBConfig
+        cfg = KBConfig(
+            docs_dir=str(tmp_path / "docs"),
+            chroma_dir=str(tmp_path / "chroma"),
+        )
+        mgr = KBManager(cfg)
+        assert mgr.list_user_kbs() == []
+
+    def test_list_sources_includes_type(self, tmp_path):
+        from zhushou.knowledge.kb_manager import KBManager
+        from zhushou.knowledge.kb_config import KBConfig
+        cfg = KBConfig(
+            docs_dir=str(tmp_path / "docs"),
+            chroma_dir=str(tmp_path / "chroma"),
+        )
+        mgr = KBManager(cfg)
+        sources = mgr.list_sources()
+        for s in sources:
+            assert "type" in s
+            assert s["type"] in ("builtin", "user")
+
+    def test_delete_user_kb_nonexistent(self, tmp_path):
+        from zhushou.knowledge.kb_manager import KBManager
+        from zhushou.knowledge.kb_config import KBConfig
+        cfg = KBConfig(
+            docs_dir=str(tmp_path / "docs"),
+            chroma_dir=str(tmp_path / "chroma"),
+        )
+        mgr = KBManager(cfg)
+        assert mgr.delete_user_kb("user_nonexistent") is False
+
+
+# ===========================================================================
+# Knowledge Base — Indexer delete_collection
+# ===========================================================================
+
+class TestIndexerDeleteCollection:
+    """Tests for the delete_collection method on KBIndexer."""
+
+    def test_method_exists(self):
+        from zhushou.knowledge.indexer import KBIndexer
+        assert hasattr(KBIndexer, "delete_collection")
+        assert callable(getattr(KBIndexer, "delete_collection"))
+
+    def test_delete_nonexistent_no_crash(self, tmp_path):
+        from zhushou.knowledge.indexer import KBIndexer
+        from zhushou.knowledge.kb_config import KBConfig
+        cfg = KBConfig(
+            docs_dir=str(tmp_path / "docs"),
+            chroma_dir=str(tmp_path / "chroma"),
+        )
+        indexer = KBIndexer(cfg)
+        # Should not crash; returns False if collection doesn't exist or chroma unavailable
+        result = indexer.delete_collection("nonexistent_xyz")
+        assert isinstance(result, bool)
+
+
+# ===========================================================================
+# API — New User KB Functions
+# ===========================================================================
+
+class TestUserKBAPI:
+    """Tests for kb_upload, kb_import_dir, kb_delete, kb_list_user."""
+
+    def test_kb_upload_exists(self):
+        from zhushou.api import kb_upload
+        assert callable(kb_upload)
+
+    def test_kb_import_dir_exists(self):
+        from zhushou.api import kb_import_dir
+        assert callable(kb_import_dir)
+
+    def test_kb_delete_exists(self):
+        from zhushou.api import kb_delete
+        assert callable(kb_delete)
+
+    def test_kb_list_user_exists(self):
+        from zhushou.api import kb_list_user
+        assert callable(kb_list_user)
+
+    def test_kb_upload_signature(self):
+        import inspect
+        from zhushou.api import kb_upload
+        sig = inspect.signature(kb_upload)
+        params = list(sig.parameters.keys())
+        assert "name" in params
+        assert "file_paths" in params
+        assert "duplicate_action" in params
+
+    def test_kb_import_dir_signature(self):
+        import inspect
+        from zhushou.api import kb_import_dir
+        sig = inspect.signature(kb_import_dir)
+        params = list(sig.parameters.keys())
+        assert "name" in params
+        assert "dir_path" in params
+
+    def test_kb_delete_signature(self):
+        import inspect
+        from zhushou.api import kb_delete
+        sig = inspect.signature(kb_delete)
+        params = list(sig.parameters.keys())
+        assert "internal_name" in params
+
+    def test_kb_list_user_returns_toolresult(self):
+        from zhushou.api import kb_list_user, ToolResult
+        result = kb_list_user()
+        assert isinstance(result, ToolResult)
+        assert result.success is True
+        assert isinstance(result.data, list)
+
+
+# ===========================================================================
+# CLI — kb upload/import/delete subcommands
+# ===========================================================================
+
+class TestCLIUserKBSubcommands:
+    """Tests for the new kb upload/import/delete CLI subcommands."""
+
+    def test_kb_upload_in_help(self):
+        r = subprocess.run(
+            [sys.executable, "-m", "zhushou", "kb", "--help"],
+            capture_output=True, text=True, timeout=15,
+        )
+        assert "upload" in r.stdout
+
+    def test_kb_import_in_help(self):
+        r = subprocess.run(
+            [sys.executable, "-m", "zhushou", "kb", "--help"],
+            capture_output=True, text=True, timeout=15,
+        )
+        assert "import" in r.stdout
+
+    def test_kb_delete_in_help(self):
+        r = subprocess.run(
+            [sys.executable, "-m", "zhushou", "kb", "--help"],
+            capture_output=True, text=True, timeout=15,
+        )
+        assert "delete" in r.stdout
+
+    def test_kb_upload_help(self):
+        r = subprocess.run(
+            [sys.executable, "-m", "zhushou", "kb", "upload", "--help"],
+            capture_output=True, text=True, timeout=15,
+        )
+        assert r.returncode == 0
+        assert "name" in r.stdout.lower()
+        assert "files" in r.stdout.lower()
+
+    def test_kb_import_help(self):
+        r = subprocess.run(
+            [sys.executable, "-m", "zhushou", "kb", "import", "--help"],
+            capture_output=True, text=True, timeout=15,
+        )
+        assert r.returncode == 0
+        assert "name" in r.stdout.lower()
+        assert "dir_path" in r.stdout.lower()
+
+    def test_kb_delete_help(self):
+        r = subprocess.run(
+            [sys.executable, "-m", "zhushou", "kb", "delete", "--help"],
+            capture_output=True, text=True, timeout=15,
+        )
+        assert r.returncode == 0
+        assert "name" in r.stdout.lower()
+
+
+# ===========================================================================
+# Web Routes — New KB Endpoints
+# ===========================================================================
+
+class TestWebKBRoutes:
+    """Tests for new KB web routes."""
+
+    def test_kb_list_route_registered(self):
+        from zhushou.web.app import create_app
+        from zhushou.config.manager import ZhuShouConfig
+        app = create_app(ZhuShouConfig())
+        paths = [r.path for r in app.routes]
+        assert "/api/kb/list" in paths
+
+    def test_kb_user_route_registered(self):
+        from zhushou.web.app import create_app
+        from zhushou.config.manager import ZhuShouConfig
+        app = create_app(ZhuShouConfig())
+        paths = [r.path for r in app.routes]
+        assert "/api/kb/user" in paths
+
+    def test_kb_upload_route_registered(self):
+        from zhushou.web.app import create_app
+        from zhushou.config.manager import ZhuShouConfig
+        app = create_app(ZhuShouConfig())
+        paths = [r.path for r in app.routes]
+        assert "/api/kb/upload" in paths
+
+    def test_kb_import_route_registered(self):
+        from zhushou.web.app import create_app
+        from zhushou.config.manager import ZhuShouConfig
+        app = create_app(ZhuShouConfig())
+        paths = [r.path for r in app.routes]
+        assert "/api/kb/import" in paths
+
+    def test_kb_delete_route_registered(self):
+        from zhushou.web.app import create_app
+        from zhushou.config.manager import ZhuShouConfig
+        app = create_app(ZhuShouConfig())
+        paths = [r.path for r in app.routes]
+        assert "/api/kb/{name}" in paths
+
+
+# ===========================================================================
+# GUI Workers — New KB Workers
+# ===========================================================================
+
+class TestGUIUserKBWorkers:
+    """Tests for KBUploadWorker and KBImportDirWorker."""
+
+    def test_kb_upload_worker_import(self):
+        from zhushou.gui.workers import KBUploadWorker
+        assert callable(KBUploadWorker)
+
+    def test_kb_import_dir_worker_import(self):
+        from zhushou.gui.workers import KBImportDirWorker
+        assert callable(KBImportDirWorker)
+
+    def test_kb_upload_worker_signature(self):
+        import inspect
+        from zhushou.gui.workers import KBUploadWorker
+        sig = inspect.signature(KBUploadWorker.__init__)
+        params = list(sig.parameters.keys())
+        assert "name" in params
+        assert "file_paths" in params
+        assert "duplicate_action" in params
+
+    def test_kb_import_dir_worker_signature(self):
+        import inspect
+        from zhushou.gui.workers import KBImportDirWorker
+        sig = inspect.signature(KBImportDirWorker.__init__)
+        params = list(sig.parameters.keys())
+        assert "name" in params
+        assert "dir_path" in params
+
+
+# ===========================================================================
+# Knowledge Base — Package Exports (expanded)
+# ===========================================================================
+
+class TestKBPackageExportsExpanded:
+    """Verify new exports from zhushou.knowledge package."""
+
+    def test_new_exports(self):
+        from zhushou.knowledge import (
+            sanitize_kb_name,
+            load_user_kbs,
+            save_user_kb,
+            delete_user_kb_entry,
+        )
+        assert callable(sanitize_kb_name)
+        assert callable(load_user_kbs)
+        assert callable(save_user_kb)
+        assert callable(delete_user_kb_entry)

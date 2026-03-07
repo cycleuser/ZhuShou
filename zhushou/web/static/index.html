@@ -21,6 +21,7 @@
             <button id="stopBtn" class="btn btn-danger" style="display:none">Stop</button>
         </div>
         <div class="status-area">
+            <span id="worldLabel" class="status-chip world-chip" title="World context">--</span>
             <span id="providerLabel" class="status-chip">--</span>
             <span id="timerLabel" class="status-chip">00:00</span>
         </div>
@@ -33,6 +34,14 @@
             <h3 class="sidebar-title">Pipeline Stages</h3>
             <div id="stageList" class="stage-list"></div>
             <div id="progressLabel" class="progress-label">Waiting to start...</div>
+            <div class="sidebar-actions">
+                <button id="crawlBtn" class="btn btn-small" title="Crawl a website into knowledge base">Crawl Docs</button>
+                <button id="uploadBtn" class="btn btn-small" title="Upload markdown/text files">Upload Files</button>
+                <button id="importBtn" class="btn btn-small" title="Import directory into knowledge base">Import Dir</button>
+                <button id="deleteKbBtn" class="btn btn-small btn-danger-small" title="Delete a user KB">Delete KB</button>
+            </div>
+            <!-- Hidden file input for upload -->
+            <input type="file" id="uploadFileInput" multiple accept=".md,.txt" style="display:none">
         </aside>
 
         <!-- Split panels -->

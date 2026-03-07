@@ -52,12 +52,14 @@ class PipelineOrchestrator:
         full_mode: bool = False,
         kb_collections: list[str] | None = None,
         event_bus: PipelineEventBus | None = None,
+        world_sense: bool = True,
     ) -> None:
         self.llm_client = llm_client
         self.work_dir = os.path.abspath(work_dir)
         self.python_path = python_path or "python3"
         self.full_mode = full_mode
         self.event_bus = event_bus
+        self.world_sense = world_sense
         self.executor = ToolExecutor(work_dir=self.work_dir)
 
         # Knowledge base
@@ -191,6 +193,13 @@ class PipelineOrchestrator:
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ]
+
+        # Inject world context into system prompt
+        from zhushou.utils.world_context import get_world_context
+
+        world_ctx = get_world_context(self.world_sense)
+        if world_ctx:
+            messages[0]["content"] = system_prompt + "\n\n" + world_ctx
 
         tool_defs = self.executor.get_tool_definitions()
         all_response_text: list[str] = []

@@ -150,6 +150,20 @@ class KBIndexer:
             pass
         return stats
 
+    def delete_collection(self, name: str) -> bool:
+        """Delete a ChromaDB collection by *name*.
+
+        Returns ``True`` if the collection was found and deleted.
+        """
+        if not self._chroma_available:
+            return False
+        try:
+            self._chroma_client.delete_collection(name)
+            return True
+        except Exception:
+            logger.warning("Failed to delete collection %s", name)
+            return False
+
     # ── Text chunking (GangDan-compatible) ────────────────────────────
 
     @staticmethod

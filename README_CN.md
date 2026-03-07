@@ -1,6 +1,6 @@
 # ZhuShou (助手) - AI 驱动的开发助手
 
-一个 AI 驱动的开发助手，支持多模型 LLM、三种界面（CLI、桌面 GUI、Web）、自主 8 阶段编程流水线、三层记忆系统和持久化配置。
+一个 AI 驱动的开发助手，支持多模型 LLM、三种界面（CLI、桌面 GUI、Web）、自主 8 阶段编程流水线、三层记忆系统、世界感知能力、网页文档爬取和持久化配置。
 
 ## 功能特点
 
@@ -14,6 +14,8 @@
 - **持久化配置** - 设置存储在 `~/.zhushou/config.json`，CLI 参数始终覆盖存储的值
 - **事件驱动架构** - 线程安全的发布/订阅事件总线，13 种事件类型驱动实时 UI 更新
 - **知识库** - 下载、索引和搜索框架文档；内置速查表；通过 `--kb` 注入流水线上下文
+- **世界感知能力** - 通过 ModelSensor 将实时日期/时间/时区注入 LLM 提示词（可配置，使用 `--no-world` 禁用）
+- **网页文档爬取** - 使用 Huan 将任意网站爬取到知识库（`zhushou kb crawl <url>`）
 - **三层记忆系统** - 持久化 JSON 键值存储、JSONL 对话日志、ChromaDB 向量搜索
 - **上下文窗口管理** - 使用超过 80% 预算时自动压缩
 - **Token 追踪和成本估算** - 按提供商/模型计算
@@ -26,6 +28,8 @@
 - Python >= 3.10
 - httpx（必需）
 - rich（必需）
+- modelsensor（必需，世界感知能力）
+- huan（必需，网页文档爬取）
 
 可选依赖：
 - PySide6（桌面 GUI）
@@ -107,6 +111,12 @@ zhushou config --setup
 # 知识库管理
 zhushou kb list
 
+# 下载框架文档
+zhushou kb download numpy
+
+# 爬取网站到知识库
+zhushou kb crawl https://docs.example.com --max-pages 100
+
 # 显示版本
 zhushou -V
 ```
@@ -133,6 +143,7 @@ zhushou [选项] [命令]
 | `--proxy` | | HTTP/HTTPS 代理 URL（默认：禁用） |
 | `--timeout` | | LLM 请求超时时间（秒，默认：300） |
 | `--no-setup` | | 跳过首次运行设置向导 |
+| `--no-world` | | 禁用世界感知（日期/时间注入） |
 
 ### 子命令
 
@@ -144,7 +155,7 @@ zhushou [选项] [命令]
 | `config` | 显示配置；`--setup` 重新运行向导 |
 | `gui` | 启动 PySide6 桌面 GUI |
 | `web` | 启动 Web 界面（`--port`、`--host`） |
-| `kb` | 知识库管理（list、download、index、search） |
+| `kb` | 知识库管理（list、download、index、search、crawl） |
 
 ### 交互式 REPL 命令
 
@@ -221,7 +232,9 @@ Web 界面提供与桌面 GUI 相同的分栏布局（侧边栏 + 代码面板 +
 | `/api/config` | GET | 当前配置（API 密钥已脱敏） |
 | `/api/providers` | GET | 可用 LLM 提供商 |
 | `/api/models` | GET | 当前提供商的可用模型 |
+| `/api/world` | GET | 世界感知信息（ModelSensor 日期/时间） |
 | `/api/pipeline` | POST | 启动流水线运行（`{"request": "..."}`） |
+| `/api/kb/crawl` | POST | 爬取网站到知识库（`{"url": "..."}`） |
 | `/ws` | WebSocket | 实时事件流 |
 
 ## 配置与设置向导
@@ -248,6 +261,7 @@ CLI 参数始终覆盖存储的配置值。
 | `base_url` | 自定义 API 端点 | （空） |
 | `proxy` | HTTP 代理 URL | （空） |
 | `timeout` | 请求超时时间（秒） | `300` |
+| `world_sense` | 启用世界感知注入 | `true` |
 
 ## 自主编程流水线
 
@@ -289,11 +303,27 @@ zhushou pipeline "用 Flask 开发一个应用" --kb flask -o ./app
 | `zhushou kb index <source>` | 将已下载的文档索引到向量数据库 |
 | `zhushou kb search <query>` | 搜索已索引的知识库 |
 | `zhushou kb cheatsheet <name>` | 显示内置速查表 |
+| `zhushou kb crawl <url>` | 爬取网站到知识库（通过 Huan） |
 
 通过 `--kb` 标志将知识库上下文注入流水线运行：
 
 ```bash
 zhushou pipeline "开发一个数据可视化应用" --kb numpy matplotlib -o ./viz
+```
+
+### 网页文档爬取
+
+使用 Huan 将任意网站爬取到知识库：
+
+```bash
+# 爬取文档站点
+zhushou kb crawl https://docs.flask.palletsprojects.com --name flask-docs
+
+# 限制页面数量并限定路径前缀
+zhushou kb crawl https://docs.python.org --max-pages 50 --prefix /3/library/
+
+# 爬取的内容自动索引，可通过 --kb 或 kb search 使用
+zhushou kb search "Flask 路由"
 ```
 
 ## 记忆系统
@@ -395,7 +425,8 @@ ZhuShou/
 │   ├── git/               # Git 操作
 │   ├── utils/             # 工具函数
 │   │   ├── constants.py        # 项目常量
-│   │   └── python_finder.py    # 多源 Python 发现
+│   │   ├── python_finder.py    # 多源 Python 发现
+│   │   └── world_context.py    # ModelSensor 世界感知助手
 │   ├── api.py             # 统一 Python API
 │   ├── tools.py           # OpenAI 函数调用格式
 │   └── cli.py             # CLI 入口

@@ -72,6 +72,11 @@ def _make_common_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Skip first-run setup wizard",
     )
+    common.add_argument(
+        "--no-world",
+        action="store_true",
+        help="Disable world-context injection (date/time awareness via ModelSensor)",
+    )
     return common
 
 
@@ -161,7 +166,7 @@ examples:
     # kb subcommand group
     kb_parser = subparsers.add_parser(
         "kb",
-        help="Knowledge base management (list, download, index, search, cheatsheet)",
+        help="Knowledge base management (list, download, index, search, cheatsheet, upload, import, delete)",
         parents=[common],
     )
     kb_subs = kb_parser.add_subparsers(dest="kb_command")
@@ -175,6 +180,22 @@ examples:
     kb_search.add_argument("--source", nargs="*", default=None, help="Limit to specific sources")
     kb_cs = kb_subs.add_parser("cheatsheet", help="Display built-in cheatsheet")
     kb_cs.add_argument("name", help="Framework name (e.g. numpy, flask)")
+    kb_crawl = kb_subs.add_parser("crawl", help="Crawl a website into knowledge base using Huan")
+    kb_crawl.add_argument("url", help="URL to crawl")
+    kb_crawl.add_argument("--name", default=None, help="Source name (default: domain)")
+    kb_crawl.add_argument("--max-pages", type=int, default=200, dest="max_pages",
+                          help="Max pages to crawl (default: 200)")
+    kb_crawl.add_argument("--prefix", default=None, help="Only crawl URLs with this path prefix")
+    kb_upload = kb_subs.add_parser("upload", help="Upload markdown/text files to create a user KB")
+    kb_upload.add_argument("name", help="Display name for the knowledge base")
+    kb_upload.add_argument("files", nargs="+", help="Paths to .md / .txt files")
+    kb_upload.add_argument("--overwrite", action="store_true",
+                           help="Overwrite existing duplicate files (default: skip)")
+    kb_imp = kb_subs.add_parser("import", help="Import a directory of markdown/text files")
+    kb_imp.add_argument("name", help="Display name for the knowledge base")
+    kb_imp.add_argument("dir_path", help="Path to the directory to import")
+    kb_del = kb_subs.add_parser("delete", help="Delete a user-created knowledge base")
+    kb_del.add_argument("name", help="Internal name of the KB to delete (user_* prefix)")
 
     # gui subcommand
     subparsers.add_parser(
@@ -310,6 +331,7 @@ def _cmd_chat(args: argparse.Namespace) -> None:
         work_dir=args.output or ".",
         proxy=args.proxy or "",
         timeout=args.timeout or 300,
+        world_sense=not getattr(args, "no_world", False),
     )
 
     if args.json_output:
@@ -339,6 +361,7 @@ def _cmd_pipeline(args: argparse.Namespace) -> None:
         full=args.full,
         timeout=args.timeout or 300,
         kb=args.kb,
+        world_sense=not getattr(args, "no_world", False),
     )
 
     if args.json_output:
@@ -425,12 +448,13 @@ def _cmd_kb(args: argparse.Namespace) -> None:
         if args.json_output:
             print(json.dumps(sources, ensure_ascii=False, indent=2))
         else:
-            fmt = "{:<14} {:<16} {:>5}  {:>5}  {:>7}  {:>6}"
-            print(fmt.format("Key", "Name", "Down", "Index", "Chunks", "Sheet"))
-            print("-" * 72)
+            fmt = "{:<20} {:<16} {:>4}  {:>5}  {:>5}  {:>7}  {:>6}"
+            print(fmt.format("Key", "Name", "Type", "Down", "Index", "Chunks", "Sheet"))
+            print("-" * 82)
             for s in sources:
                 print(fmt.format(
                     s["key"], s["name"],
+                    s.get("type", "?")[:4],
                     "yes" if s["downloaded"] else "-",
                     "yes" if s["indexed"] else "-",
                     str(s["index_chunks"]) if s["indexed"] else "-",
@@ -474,8 +498,62 @@ def _cmd_kb(args: argparse.Namespace) -> None:
                 s["key"] for s in kb.list_sources() if s["cheatsheet"]
             ))
             print(f"No cheatsheet for '{args.name}'. Available: {available}")
+    elif sub == "crawl":
+        try:
+            pages_saved, output_dir = kb.crawl(
+                args.url,
+                name=args.name,
+                max_pages=args.max_pages,
+                prefix=args.prefix,
+            )
+            if args.json_output:
+                print(json.dumps({"pages_saved": pages_saved, "output_dir": output_dir},
+                                 ensure_ascii=False))
+            else:
+                print(f"Crawled {pages_saved} page(s) from '{args.url}'")
+                print(f"Saved to: {output_dir}")
+                print("Auto-indexed into knowledge base.")
+        except ImportError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
+        except Exception as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
+    elif sub == "upload":
+        dup_action = "overwrite" if getattr(args, "overwrite", False) else "skip"
+        result = kb.upload_files(args.name, args.files, duplicate_action=dup_action)
+        if args.json_output:
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        else:
+            print(f"KB '{args.name}' (internal: {result['internal_name']})")
+            print(f"  Saved: {result['saved']}  Skipped: {result['skipped']}")
+            if result["errors"]:
+                for e in result["errors"]:
+                    print(f"  Error: {e}", file=sys.stderr)
+    elif sub == "import":
+        result = kb.import_directory(args.name, args.dir_path)
+        if args.json_output:
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        else:
+            print(f"KB '{args.name}' (internal: {result['internal_name']})")
+            print(f"  Imported: {result['saved']} file(s)")
+            if result["errors"]:
+                for e in result["errors"]:
+                    print(f"  Error: {e}", file=sys.stderr)
+    elif sub == "delete":
+        if not args.name.startswith("user_"):
+            print("Error: Only user-created KBs (user_* prefix) can be deleted.", file=sys.stderr)
+            sys.exit(1)
+        deleted = kb.delete_user_kb(args.name)
+        if args.json_output:
+            print(json.dumps({"deleted": deleted, "name": args.name}, ensure_ascii=False))
+        elif deleted:
+            print(f"Deleted KB '{args.name}'")
+        else:
+            print(f"KB '{args.name}' not found.", file=sys.stderr)
+            sys.exit(1)
     else:
-        print("Usage: zhushou kb {list|download|index|search|cheatsheet}")
+        print("Usage: zhushou kb {list|download|index|search|cheatsheet|crawl|upload|import|delete}")
         print("Run 'zhushou kb --help' for details.")
 
 
@@ -556,6 +634,7 @@ def _cmd_interactive(args: argparse.Namespace) -> None:
             memory=memory,
             tracker=tracker,
             persona=persona,
+            world_sense=not getattr(args, "no_world", False),
         )
         loop.run_interactive()
 

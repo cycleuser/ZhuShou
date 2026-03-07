@@ -136,6 +136,7 @@ class PipelineWorker(QThread):
         full_mode: bool = False,
         python_path: str = "",
         kb_collections: list[str] | None = None,
+        world_sense: bool = True,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
@@ -151,6 +152,7 @@ class PipelineWorker(QThread):
         self._full_mode = full_mode
         self._python_path = python_path
         self._kb_collections = kb_collections
+        self._world_sense = world_sense
 
     def run(self) -> None:
         """Execute the pipeline (called by QThread.start)."""
@@ -181,6 +183,7 @@ class PipelineWorker(QThread):
                 full_mode=self._full_mode,
                 kb_collections=self._kb_collections,
                 event_bus=self._event_bus,
+                world_sense=self._world_sense,
             )
 
             stats = orchestrator.run(self._request)
@@ -189,3 +192,107 @@ class PipelineWorker(QThread):
         except Exception as exc:
             logger.exception("Pipeline worker failed")
             self.error_occurred.emit(str(exc))
+
+
+class KBCrawlWorker(QThread):
+    """Background thread for crawling a website into the knowledge base."""
+
+    crawl_finished = Signal(int, str)   # pages_saved, output_dir
+    crawl_error = Signal(str)           # error message
+
+    def __init__(
+        self,
+        url: str,
+        *,
+        name: str | None = None,
+        max_pages: int = 200,
+        prefix: str | None = None,
+        parent: QObject | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._url = url
+        self._name = name
+        self._max_pages = max_pages
+        self._prefix = prefix
+
+    def run(self) -> None:
+        try:
+            from zhushou.knowledge.kb_manager import KBManager
+            from zhushou.knowledge.kb_config import KBConfig
+
+            mgr = KBManager(KBConfig())
+            pages_saved, output_dir = mgr.crawl(
+                self._url,
+                name=self._name,
+                max_pages=self._max_pages,
+                prefix=self._prefix,
+            )
+            self.crawl_finished.emit(pages_saved, output_dir)
+        except Exception as exc:
+            logger.exception("KB crawl worker failed")
+            self.crawl_error.emit(str(exc))
+
+
+class KBUploadWorker(QThread):
+    """Background thread for uploading files into a user KB."""
+
+    upload_finished = Signal(dict)  # result dict
+    upload_error = Signal(str)      # error message
+
+    def __init__(
+        self,
+        name: str,
+        file_paths: list[str],
+        *,
+        duplicate_action: str = "skip",
+        parent: QObject | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._name = name
+        self._file_paths = file_paths
+        self._duplicate_action = duplicate_action
+
+    def run(self) -> None:
+        try:
+            from zhushou.knowledge.kb_manager import KBManager
+            from zhushou.knowledge.kb_config import KBConfig
+
+            mgr = KBManager(KBConfig())
+            result = mgr.upload_files(
+                self._name, self._file_paths,
+                duplicate_action=self._duplicate_action,
+            )
+            self.upload_finished.emit(result)
+        except Exception as exc:
+            logger.exception("KB upload worker failed")
+            self.upload_error.emit(str(exc))
+
+
+class KBImportDirWorker(QThread):
+    """Background thread for importing a directory into a user KB."""
+
+    import_finished = Signal(dict)  # result dict
+    import_error = Signal(str)      # error message
+
+    def __init__(
+        self,
+        name: str,
+        dir_path: str,
+        *,
+        parent: QObject | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._name = name
+        self._dir_path = dir_path
+
+    def run(self) -> None:
+        try:
+            from zhushou.knowledge.kb_manager import KBManager
+            from zhushou.knowledge.kb_config import KBConfig
+
+            mgr = KBManager(KBConfig())
+            result = mgr.import_directory(self._name, self._dir_path)
+            self.import_finished.emit(result)
+        except Exception as exc:
+            logger.exception("KB import worker failed")
+            self.import_error.emit(str(exc))

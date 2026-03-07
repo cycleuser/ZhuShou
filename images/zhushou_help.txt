@@ -1,6 +1,7 @@
 usage: zhushou [-h] [-v] [--json] [-q] [-o OUTPUT] [--provider PROVIDER]
                [--model MODEL] [--api-key API_KEY] [--base-url BASE_URL]
-               [--proxy PROXY] [--timeout TIMEOUT] [--no-setup] [-V]
+               [--proxy PROXY] [--timeout TIMEOUT] [--no-setup] [--no-world]
+               [-V]
                {chat,pipeline,models,config,kb,gui,web} ...
 
 ZhuShou (助手) - AI-powered development assistant
@@ -34,6 +35,8 @@ options:
                         system proxy env vars)
   --timeout TIMEOUT     LLM request timeout in seconds (default: 300)
   --no-setup            Skip first-run setup wizard
+  --no-world            Disable world-context injection (date/time awareness
+                        via ModelSensor)
   -V, --version         show program's version number and exit
 
 examples:

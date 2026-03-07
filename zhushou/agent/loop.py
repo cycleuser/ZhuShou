@@ -66,6 +66,7 @@ class AgentLoop:
         memory: PersistentMemory,
         tracker: TokenTracker,
         persona: Any,
+        world_sense: bool = True,
     ) -> None:
         self.llm_client = llm_client
         self.tool_executor = tool_executor
@@ -73,6 +74,7 @@ class AgentLoop:
         self.memory = memory
         self.tracker = tracker
         self.persona = persona
+        self.world_sense = world_sense
 
         # Current session conversation history
         self._conversation: list[dict[str, Any]] = []
@@ -271,5 +273,12 @@ class AgentLoop:
             parts.append(f"Your persona name is '{name}'.")
         if instructions:
             parts.append(instructions)
+
+        # Inject world context (date/time awareness)
+        from zhushou.utils.world_context import get_world_context
+
+        world_ctx = get_world_context(self.world_sense)
+        if world_ctx:
+            parts.append(world_ctx)
 
         return "\n\n".join(parts)

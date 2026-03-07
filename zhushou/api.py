@@ -39,6 +39,7 @@ def chat(
     persona_dir: str = "",
     proxy: str = "",
     timeout: int = 300,
+    world_sense: bool = True,
 ) -> ToolResult:
     """Send a message to the AI assistant and get a response.
 
@@ -102,6 +103,7 @@ def chat(
             memory=memory,
             tracker=tracker,
             persona=persona,
+            world_sense=world_sense,
         )
         response = loop.process_message(message)
 
@@ -131,6 +133,7 @@ def run_pipeline(
     full: bool = False,
     timeout: int = 300,
     kb: list[str] | None = None,
+    world_sense: bool = True,
 ) -> ToolResult:
     """Run the 7-stage (or 9-stage with full=True) autonomous coding pipeline.
 
@@ -188,6 +191,7 @@ def run_pipeline(
             python_path=python_path,
             full_mode=full,
             kb_collections=kb,
+            world_sense=world_sense,
         )
         stats = orchestrator.run(request)
 
@@ -337,5 +341,151 @@ def kb_search(query: str, *, sources: list[str] | None = None, **kwargs: Any) ->
         mgr = KBManager()
         results = mgr.search(query, collections=sources)
         return ToolResult(success=True, data=results)
+    except Exception as e:
+        return ToolResult(success=False, error=str(e))
+
+
+def kb_crawl(
+    url: str,
+    *,
+    name: str | None = None,
+    max_pages: int = 200,
+    prefix: str | None = None,
+) -> ToolResult:
+    """Crawl a website into the knowledge base using Huan.
+
+    Parameters
+    ----------
+    url : str
+        URL to crawl.
+    name : str | None
+        Source name. Defaults to the domain.
+    max_pages : int
+        Maximum pages to crawl.
+    prefix : str | None
+        Only crawl URLs with this path prefix.
+
+    Returns
+    -------
+    ToolResult
+        With data containing pages_saved and output_dir.
+    """
+    try:
+        from zhushou.knowledge.kb_manager import KBManager
+
+        mgr = KBManager()
+        pages_saved, output_dir = mgr.crawl(
+            url, name=name, max_pages=max_pages, prefix=prefix,
+        )
+        return ToolResult(
+            success=pages_saved > 0,
+            data={"pages_saved": pages_saved, "output_dir": output_dir},
+        )
+    except Exception as e:
+        return ToolResult(success=False, error=str(e))
+
+
+def kb_upload(
+    name: str,
+    file_paths: list[str],
+    *,
+    duplicate_action: str = "skip",
+) -> ToolResult:
+    """Upload markdown/text files to create or extend a user KB.
+
+    Parameters
+    ----------
+    name : str
+        Human-readable display name for the KB.
+    file_paths : list[str]
+        Paths to ``.md`` / ``.txt`` files.
+    duplicate_action : str
+        ``"skip"`` (default) or ``"overwrite"`` existing files.
+
+    Returns
+    -------
+    ToolResult
+        With data containing internal_name, saved, skipped, errors.
+    """
+    try:
+        from zhushou.knowledge.kb_manager import KBManager
+
+        mgr = KBManager()
+        result = mgr.upload_files(name, file_paths, duplicate_action=duplicate_action)
+        return ToolResult(
+            success=result["saved"] > 0 or result["skipped"] > 0,
+            data=result,
+        )
+    except Exception as e:
+        return ToolResult(success=False, error=str(e))
+
+
+def kb_import_dir(
+    name: str,
+    dir_path: str,
+) -> ToolResult:
+    """Recursively import markdown/text files from a directory into a user KB.
+
+    Parameters
+    ----------
+    name : str
+        Human-readable display name for the KB.
+    dir_path : str
+        Path to the source directory.
+
+    Returns
+    -------
+    ToolResult
+        With data containing internal_name, saved, errors.
+    """
+    try:
+        from zhushou.knowledge.kb_manager import KBManager
+
+        mgr = KBManager()
+        result = mgr.import_directory(name, dir_path)
+        return ToolResult(success=result["saved"] > 0, data=result)
+    except Exception as e:
+        return ToolResult(success=False, error=str(e))
+
+
+def kb_delete(internal_name: str) -> ToolResult:
+    """Delete a user-created knowledge base.
+
+    Parameters
+    ----------
+    internal_name : str
+        Internal name of the KB (``user_``-prefixed).
+
+    Returns
+    -------
+    ToolResult
+        With data containing deleted status.
+    """
+    try:
+        from zhushou.knowledge.kb_manager import KBManager
+
+        mgr = KBManager()
+        deleted = mgr.delete_user_kb(internal_name)
+        return ToolResult(
+            success=deleted,
+            data={"deleted": deleted, "name": internal_name},
+        )
+    except Exception as e:
+        return ToolResult(success=False, error=str(e))
+
+
+def kb_list_user() -> ToolResult:
+    """List all user-created knowledge bases.
+
+    Returns
+    -------
+    ToolResult
+        With data containing list of user KB metadata dicts.
+    """
+    try:
+        from zhushou.knowledge.kb_manager import KBManager
+
+        mgr = KBManager()
+        return ToolResult(success=True, data=mgr.list_user_kbs())
     except Exception as e:
         return ToolResult(success=False, error=str(e))

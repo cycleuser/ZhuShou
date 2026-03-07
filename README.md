@@ -1,6 +1,6 @@
 # ZhuShou (助手) - AI-Powered Development Assistant
 
-An AI-powered development assistant with multi-model LLM support, three interfaces (CLI, desktop GUI, web), an autonomous 8-stage coding pipeline, three-tier memory, and persistent configuration.
+An AI-powered development assistant with multi-model LLM support, three interfaces (CLI, desktop GUI, web), an autonomous 8-stage coding pipeline, three-tier memory, world-context awareness, web doc crawling, and persistent configuration.
 
 ## Features
 
@@ -14,6 +14,8 @@ An AI-powered development assistant with multi-model LLM support, three interfac
 - **Persistent Configuration** - settings stored in `~/.zhushou/config.json`, CLI args always override stored values
 - **Event-driven Architecture** - thread-safe pub/sub event bus with 13 event types powering real-time UI updates
 - **Knowledge Base** - download, index, and search framework documentation; built-in cheatsheets; pipeline context injection via `--kb`
+- **World-Context Awareness** - injects real-time date/time/timezone into LLM prompts via ModelSensor (configurable, disable with `--no-world`)
+- **Web Doc Crawler** - crawl any website into the knowledge base using Huan (`zhushou kb crawl <url>`)
 - **Three-tier memory system** - persistent JSON KV store, JSONL conversation logs, ChromaDB vector search
 - **Context window management** - automatic compaction when 80% of context budget is used
 - **Token tracking and cost estimation** per provider/model
@@ -26,6 +28,8 @@ An AI-powered development assistant with multi-model LLM support, three interfac
 - Python >= 3.10
 - httpx (required)
 - rich (required)
+- modelsensor (required, world-context awareness)
+- huan (required, web doc crawling)
 
 Optional:
 - PySide6 (for desktop GUI)
@@ -107,6 +111,12 @@ zhushou config --setup
 # Knowledge base management
 zhushou kb list
 
+# Download framework docs
+zhushou kb download numpy
+
+# Crawl a website into KB
+zhushou kb crawl https://docs.example.com --max-pages 100
+
 # Show version
 zhushou -V
 ```
@@ -133,6 +143,7 @@ zhushou [options] [command]
 | `--proxy` | | HTTP/HTTPS proxy URL (default: disabled) |
 | `--timeout` | | LLM request timeout in seconds (default: 300) |
 | `--no-setup` | | Skip first-run setup wizard |
+| `--no-world` | | Disable world-context injection (date/time awareness) |
 
 ### Subcommands
 
@@ -144,7 +155,7 @@ zhushou [options] [command]
 | `config` | Show configuration; `--setup` to re-run wizard |
 | `gui` | Launch PySide6 desktop GUI |
 | `web` | Launch web interface (`--port`, `--host`) |
-| `kb` | Knowledge base management (list, download, index, search) |
+| `kb` | Knowledge base management (list, download, index, search, crawl) |
 
 ### Interactive REPL Commands
 
@@ -221,7 +232,9 @@ The web interface provides the same split-panel layout as the desktop GUI (sideb
 | `/api/config` | GET | Current configuration (API keys masked) |
 | `/api/providers` | GET | Available LLM providers |
 | `/api/models` | GET | Models for current provider |
+| `/api/world` | GET | World context info (date/time from ModelSensor) |
 | `/api/pipeline` | POST | Start a pipeline run (`{"request": "..."}`) |
+| `/api/kb/crawl` | POST | Crawl a website into KB (`{"url": "..."}`) |
 | `/ws` | WebSocket | Real-time event stream |
 
 ## Configuration & Setup Wizard
@@ -248,6 +261,7 @@ CLI arguments always override stored configuration values.
 | `base_url` | Custom API endpoint | (empty) |
 | `proxy` | HTTP proxy URL | (empty) |
 | `timeout` | Request timeout in seconds | `300` |
+| `world_sense` | Enable world-context injection | `true` |
 
 ## Autonomous Pipeline
 
@@ -289,11 +303,27 @@ Download, index, and search official framework documentation for use as pipeline
 | `zhushou kb index <source>` | Index downloaded docs into vector DB |
 | `zhushou kb search <query>` | Search indexed knowledge base |
 | `zhushou kb cheatsheet <name>` | Display built-in cheatsheet |
+| `zhushou kb crawl <url>` | Crawl a website into knowledge base (via Huan) |
 
 Inject knowledge base context into pipeline runs with the `--kb` flag:
 
 ```bash
 zhushou pipeline "Build a data viz app" --kb numpy matplotlib -o ./viz
+```
+
+### Web Doc Crawling
+
+Crawl any website into the knowledge base using Huan:
+
+```bash
+# Crawl a documentation site
+zhushou kb crawl https://docs.flask.palletsprojects.com --name flask-docs
+
+# Limit pages and restrict to a path prefix
+zhushou kb crawl https://docs.python.org --max-pages 50 --prefix /3/library/
+
+# Crawled content is auto-indexed and available via --kb or kb search
+zhushou kb search "Flask routing"
 ```
 
 ## Memory System
@@ -395,7 +425,8 @@ ZhuShou/
 │   ├── git/               # Git operations
 │   ├── utils/             # Utilities
 │   │   ├── constants.py        # Project constants
-│   │   └── python_finder.py    # Multi-source Python discovery
+│   │   ├── python_finder.py    # Multi-source Python discovery
+│   │   └── world_context.py    # ModelSensor world-context helper
 │   ├── api.py             # Unified Python API
 │   ├── tools.py           # OpenAI function-calling schemas
 │   └── cli.py             # CLI entry point

@@ -112,6 +112,18 @@ html, body {
     font-family: var(--font-mono);
 }
 
+.status-chip.world-chip {
+    max-width: 280px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.status-chip.world-chip.active {
+    color: var(--success);
+    border: 1px solid var(--success);
+}
+
 /* ── Buttons ─────────────────────────────────────────── */
 
 .btn {
@@ -240,6 +252,33 @@ html, body {
     font-size: 12px;
     color: var(--fg-dim);
     border-top: 1px solid var(--border);
+}
+
+.sidebar-actions {
+    padding: 8px 16px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.sidebar-actions .btn {
+    flex: 1 1 45%;
+    text-align: center;
+}
+
+.btn-danger-small {
+    background: var(--error);
+    color: var(--bg-primary);
+    border: none;
+    border-radius: var(--radius-sm);
+    padding: 4px 10px;
+    font-size: 0.8rem;
+    cursor: pointer;
+}
+
+.btn-danger-small:hover {
+    opacity: 0.85;
 }
 
 /* ── Panels container ────────────────────────────────── */
