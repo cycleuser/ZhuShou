@@ -1,6 +1,6 @@
 """ZhuShou (助手) - AI-powered development assistant."""
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 from .api import ToolResult, chat, run_pipeline, search_pypi
 
