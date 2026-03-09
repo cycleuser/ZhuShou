@@ -94,6 +94,10 @@ examples:
   zhushou                                  Launch interactive REPL
   zhushou chat "Explain decorators"        Single-turn chat
   zhushou pipeline "Build Gomoku" -o .     Run coding pipeline
+  zhushou daemon                           Start orchestration daemon
+  zhushou daemon -w ./WORKFLOW.md          Daemon with custom workflow
+  zhushou status                           Show orchestrator status
+  zhushou task list                        List tasks from tracker
   zhushou models                           List available models
   zhushou config                           Show configuration
   zhushou config --setup                   Re-run setup wizard
@@ -197,6 +201,55 @@ examples:
     kb_del = kb_subs.add_parser("delete", help="Delete a user-created knowledge base")
     kb_del.add_argument("name", help="Internal name of the KB to delete (user_* prefix)")
 
+    # daemon subcommand
+    daemon_parser = subparsers.add_parser(
+        "daemon",
+        help="Start the orchestration daemon (polls tracker, dispatches agents)",
+        parents=[common],
+    )
+    daemon_parser.add_argument(
+        "--workflow", "-w",
+        default="./WORKFLOW.md",
+        help="Path to WORKFLOW.md file (default: ./WORKFLOW.md)",
+    )
+    daemon_parser.add_argument(
+        "--no-dashboard",
+        action="store_true",
+        help="Disable the live terminal dashboard",
+    )
+
+    # status subcommand
+    status_parser = subparsers.add_parser(
+        "status",
+        help="Show current orchestrator / workflow status",
+        parents=[common],
+    )
+    status_parser.add_argument(
+        "--workflow", "-w",
+        default="./WORKFLOW.md",
+        help="Path to WORKFLOW.md file (default: ./WORKFLOW.md)",
+    )
+
+    # task subcommand group
+    task_parser = subparsers.add_parser(
+        "task",
+        help="Task management (list, add, show)",
+        parents=[common],
+    )
+    task_parser.add_argument(
+        "--workflow", "-w",
+        default="./WORKFLOW.md",
+        help="Path to WORKFLOW.md file (default: ./WORKFLOW.md)",
+    )
+    task_subs = task_parser.add_subparsers(dest="task_command")
+    task_subs.add_parser("list", help="List tasks from the configured tracker")
+    task_add = task_subs.add_parser("add", help="Add a new task (local YAML tracker only)")
+    task_add.add_argument("title", help="Task title")
+    task_add.add_argument("--description", "-d", default="", help="Task description")
+    task_add.add_argument("--priority", "-p", type=int, default=0, help="Priority (1=urgent, 4=low)")
+    task_show = task_subs.add_parser("show", help="Show details for a specific task")
+    task_show.add_argument("task_id", help="Task ID")
+
     # gui subcommand
     subparsers.add_parser(
         "gui",
@@ -237,7 +290,7 @@ examples:
 
     # First-run wizard (skip for certain commands and flags)
     command = args.command
-    skip_wizard_commands = {"config", "gui", "web", "models", "kb"}
+    skip_wizard_commands = {"config", "gui", "web", "models", "kb", "daemon", "status", "task"}
     if (config.is_first_run
             and not args.no_setup
             and command not in skip_wizard_commands):
@@ -263,6 +316,12 @@ examples:
         _cmd_config(args, config)
     elif command == "kb":
         _cmd_kb(args)
+    elif command == "daemon":
+        _cmd_daemon(args)
+    elif command == "status":
+        _cmd_status(args)
+    elif command == "task":
+        _cmd_task(args)
     elif command == "gui":
         _cmd_gui(args, config)
     elif command == "web":
@@ -555,6 +614,189 @@ def _cmd_kb(args: argparse.Namespace) -> None:
     else:
         print("Usage: zhushou kb {list|download|index|search|cheatsheet|crawl|upload|import|delete}")
         print("Run 'zhushou kb --help' for details.")
+
+
+def _cmd_daemon(args: argparse.Namespace) -> None:
+    """Start the orchestration daemon."""
+    import asyncio
+
+    from zhushou.api_daemon import run_daemon
+
+    workflow_path = getattr(args, "workflow", "./WORKFLOW.md")
+    no_dashboard = getattr(args, "no_dashboard", False)
+
+    print(f"Starting orchestration daemon (workflow: {workflow_path})")
+    if no_dashboard:
+        print("Dashboard disabled")
+
+    try:
+        asyncio.run(
+            run_daemon(
+                workflow_path=workflow_path,
+                dashboard=not no_dashboard,
+            )
+        )
+    except KeyboardInterrupt:
+        print("\nDaemon stopped.")
+    except FileNotFoundError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+    except Exception as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+
+def _cmd_status(args: argparse.Namespace) -> None:
+    """Show orchestrator / workflow status (one-shot)."""
+    from zhushou.api_daemon import get_snapshot_dict
+
+    workflow_path = getattr(args, "workflow", "./WORKFLOW.md")
+    snap = get_snapshot_dict(workflow_path)
+
+    if "error" in snap:
+        print(f"Error: {snap['error']}", file=sys.stderr)
+        sys.exit(1)
+
+    if args.json_output:
+        print(json.dumps(snap, ensure_ascii=False, indent=2))
+    else:
+        from zhushou.display.dashboard import render_snapshot_panel
+        from rich.console import Console
+
+        Console().print(render_snapshot_panel(snap))
+
+
+def _cmd_task(args: argparse.Namespace) -> None:
+    """Handle the task subcommand group."""
+    import asyncio
+
+    sub = getattr(args, "task_command", None)
+    workflow_path = getattr(args, "workflow", "./WORKFLOW.md")
+
+    if sub == "list":
+        asyncio.run(_task_list(args, workflow_path))
+    elif sub == "add":
+        asyncio.run(_task_add(args, workflow_path))
+    elif sub == "show":
+        asyncio.run(_task_show(args, workflow_path))
+    else:
+        print("Usage: zhushou task {list|add|show}")
+        print("Run 'zhushou task --help' for details.")
+
+
+async def _task_list(args: argparse.Namespace, workflow_path: str) -> None:
+    """List tasks from the configured tracker."""
+    from zhushou.tracker import create_tracker
+    from zhushou.workflow.store import WorkflowStore
+
+    store = WorkflowStore(workflow_path)
+    config = store.current_config
+    tracker = create_tracker(config)
+
+    tasks = await tracker.fetch_candidate_tasks(
+        active_states=config.active_states,
+        terminal_states=[],  # show all non-terminal
+    )
+
+    if args.json_output:
+        print(json.dumps([t.to_template_dict() for t in tasks], ensure_ascii=False, indent=2))
+    elif not tasks:
+        print("No tasks found.")
+    else:
+        from rich.console import Console
+        from rich.table import Table
+
+        table = Table(title="Tasks", border_style="cyan")
+        table.add_column("ID", style="bold", width=8)
+        table.add_column("Identifier", width=12)
+        table.add_column("Title", ratio=2)
+        table.add_column("State", width=14)
+        table.add_column("Priority", justify="center", width=8)
+
+        for t in tasks:
+            prio = str(t.priority) if t.priority else "-"
+            table.add_row(t.id, t.identifier, t.title, t.state, prio)
+
+        Console().print(table)
+
+
+async def _task_add(args: argparse.Namespace, workflow_path: str) -> None:
+    """Add a new task to the local YAML tracker."""
+    from zhushou.workflow.store import WorkflowStore
+
+    store = WorkflowStore(workflow_path)
+    config = store.current_config
+
+    if config.tracker_kind != "local":
+        print("Error: 'task add' is only supported with the local YAML tracker.", file=sys.stderr)
+        sys.exit(1)
+
+    import uuid
+    import yaml
+    from pathlib import Path
+
+    task_file = Path(config.tracker_file)
+    # Load existing tasks
+    if task_file.is_file():
+        raw = yaml.safe_load(task_file.read_text(encoding="utf-8"))
+        if not isinstance(raw, list):
+            raw = []
+    else:
+        raw = []
+
+    new_task = {
+        "id": str(uuid.uuid4())[:8],
+        "title": args.title,
+        "description": getattr(args, "description", ""),
+        "state": "todo",
+        "priority": getattr(args, "priority", 0),
+    }
+    raw.append(new_task)
+
+    task_file.parent.mkdir(parents=True, exist_ok=True)
+    task_file.write_text(
+        yaml.dump(raw, default_flow_style=False, allow_unicode=True, sort_keys=False),
+        encoding="utf-8",
+    )
+    print(f"Added task {new_task['id']}: {args.title}")
+
+
+async def _task_show(args: argparse.Namespace, workflow_path: str) -> None:
+    """Show a single task's details."""
+    from zhushou.tracker import create_tracker
+    from zhushou.workflow.store import WorkflowStore
+
+    store = WorkflowStore(workflow_path)
+    config = store.current_config
+    tracker = create_tracker(config)
+
+    task = await tracker.fetch_task_by_id(args.task_id)
+    if task is None:
+        print(f"Task '{args.task_id}' not found.", file=sys.stderr)
+        sys.exit(1)
+
+    if args.json_output:
+        print(json.dumps(task.to_template_dict(), ensure_ascii=False, indent=2))
+    else:
+        from rich.console import Console
+        from rich.panel import Panel
+        from rich.text import Text
+
+        body = Text()
+        body.append(f"ID:          {task.id}\n")
+        body.append(f"Identifier:  {task.identifier}\n")
+        body.append(f"Title:       {task.title}\n")
+        body.append(f"State:       {task.state}\n")
+        body.append(f"Priority:    {task.priority or '-'}\n")
+        body.append(f"Assignee:    {task.assignee or '-'}\n")
+        body.append(f"Labels:      {', '.join(task.labels) if task.labels else '-'}\n")
+        body.append(f"Blocked by:  {', '.join(task.blocked_by) if task.blocked_by else '-'}\n")
+        if task.url:
+            body.append(f"URL:         {task.url}\n")
+        if task.description:
+            body.append(f"\n{task.description}")
+
+        Console().print(Panel(body, title=f"[bold]{task.identifier}[/bold]", border_style="cyan"))
 
 
 def _cmd_gui(args: argparse.Namespace, config: object = None) -> None:

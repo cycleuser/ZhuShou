@@ -13,6 +13,10 @@ Endpoints:
   POST /api/kb/upload    Upload files to create/extend user KB
   POST /api/kb/import    Import directory into user KB
   DELETE /api/kb/{name}  Delete a user KB
+  POST /api/daemon/start Start orchestration daemon
+  POST /api/daemon/stop  Stop orchestration daemon
+  GET  /api/daemon/snapshot  Current orchestrator state
+  GET  /api/tasks        List tasks from tracker
   WS   /ws               Real-time event stream
 """
 
@@ -44,6 +48,10 @@ _config: ZhuShouConfig = ZhuShouConfig()
 _bridge: WebEventBridge = WebEventBridge()
 _running: bool = False
 _static_dir = Path(__file__).parent / "static"
+
+# Orchestrator daemon state
+_orchestrator: Any = None
+_orchestrator_task: Any = None
 
 
 def configure(config: ZhuShouConfig, bridge: WebEventBridge) -> None:
@@ -340,6 +348,102 @@ async def delete_kb(name: str):
         return JSONResponse({"success": True, "deleted": name})
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
+
+
+# ── Orchestrator daemon endpoints ──────────────────────────────────
+
+@router.post("/api/daemon/start")
+async def daemon_start(body: dict[str, Any] = {}):
+    """Start the orchestration daemon via the web API."""
+    global _orchestrator, _orchestrator_task
+
+    if _orchestrator is not None and _orchestrator_task and not _orchestrator_task.done():
+        return JSONResponse({"error": "Daemon is already running"}, status_code=409)
+
+    workflow_path = body.get("workflow_path", "./WORKFLOW.md")
+
+    try:
+        from zhushou.events.bus import PipelineEventBus
+        from zhushou.orchestrator.loop import Orchestrator
+        from zhushou.tracker import create_tracker
+        from zhushou.workflow.store import WorkflowStore
+
+        store = WorkflowStore(workflow_path)
+        config = store.current_config
+        tracker = create_tracker(config)
+
+        event_bus = PipelineEventBus()
+        event_bus.subscribe(_bridge.on_event)
+
+        orch = Orchestrator(
+            workflow_store=store,
+            tracker=tracker,
+            event_bus=event_bus,
+        )
+        _orchestrator = orch
+        _orchestrator_task = asyncio.create_task(orch.start(), name="web-daemon")
+
+        return JSONResponse({"status": "started", "tracker": config.tracker_kind})
+    except FileNotFoundError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=404)
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+@router.post("/api/daemon/stop")
+async def daemon_stop():
+    """Stop the orchestration daemon."""
+    global _orchestrator, _orchestrator_task
+
+    if _orchestrator is None:
+        return JSONResponse({"error": "Daemon is not running"}, status_code=400)
+
+    await _orchestrator.stop()
+    if _orchestrator_task and not _orchestrator_task.done():
+        _orchestrator_task.cancel()
+        try:
+            await _orchestrator_task
+        except asyncio.CancelledError:
+            pass
+
+    _orchestrator = None
+    _orchestrator_task = None
+    return JSONResponse({"status": "stopped"})
+
+
+@router.get("/api/daemon/snapshot")
+async def daemon_snapshot():
+    """Return the current orchestrator state snapshot."""
+    if _orchestrator is None:
+        return JSONResponse({"error": "Daemon is not running"}, status_code=400)
+
+    snap = _orchestrator.get_snapshot()
+    return JSONResponse(snap.to_dict())
+
+
+@router.get("/api/tasks")
+async def list_tasks(workflow_path: str = "./WORKFLOW.md"):
+    """List tasks from the configured tracker."""
+    try:
+        from zhushou.tracker import create_tracker
+        from zhushou.workflow.store import WorkflowStore
+
+        store = WorkflowStore(workflow_path)
+        config = store.current_config
+        tracker = create_tracker(config)
+
+        tasks = await tracker.fetch_candidate_tasks(
+            active_states=config.active_states,
+            terminal_states=[],
+        )
+        return JSONResponse({
+            "tasks": [t.to_template_dict() for t in tasks],
+            "count": len(tasks),
+        })
+    except FileNotFoundError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=404)
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
 
 
 # ── WebSocket ──────────────────────────────────────────────────────

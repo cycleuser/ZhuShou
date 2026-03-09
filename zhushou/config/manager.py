@@ -49,6 +49,9 @@ class ZhuShouConfig:
     first_run_complete: bool = False
     version: int = 1
 
+    # Orchestrator / workflow settings
+    workflow_path: str = ""
+
     # ── I/O ────────────────────────────────────────────────────────
 
     @classmethod

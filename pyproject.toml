@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "zhushou"
 dynamic = ["version"]
-description = "AI-powered development assistant with multi-model support, desktop GUI, web interface, and autonomous coding pipeline"
+description = "AI-powered development assistant with multi-model support, desktop GUI, web interface, autonomous coding pipeline, and orchestration daemon"
 readme = "README.md"
 license = {text = "GPL-3.0-or-later"}
 requires-python = ">=3.10"
@@ -13,6 +13,7 @@ authors = [{name = "cycleuser"}]
 keywords = [
     "ai", "assistant", "llm", "agent", "coding",
     "openai", "anthropic", "ollama", "development",
+    "orchestrator", "workflow", "automation",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -30,6 +31,9 @@ dependencies = [
     "rich>=13.0",
     "modelsensor>=1.1.0",
     "huan>=0.2.0",
+    "pyyaml>=6.0",
+    "jinja2>=3.1",
+    "watchdog>=3.0",
 ]
 
 [project.optional-dependencies]
@@ -48,7 +52,7 @@ all = [
 ]
 gui = ["PySide6>=6.5"]
 web = ["fastapi>=0.100", "uvicorn>=0.23", "python-multipart>=0.0.6"]
-dev = ["pytest>=7.0"]
+dev = ["pytest>=7.0", "pytest-asyncio>=0.21"]
 
 [project.scripts]
 zhushou = "zhushou.cli:main"

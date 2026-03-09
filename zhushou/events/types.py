@@ -1,7 +1,10 @@
-"""Pipeline event type definitions.
+"""Pipeline and orchestrator event type definitions.
 
 All events are frozen dataclasses (immutable, safe to pass between threads).
 Each carries a ``to_dict()`` method for JSON serialization (Web/WebSocket).
+
+Extends the original stage-level events with task lifecycle events for
+the new orchestration system.
 """
 
 from __future__ import annotations
@@ -13,7 +16,7 @@ from typing import Any
 
 @dataclass(frozen=True)
 class PipelineEvent:
-    """Base event — every pipeline event inherits from this."""
+    """Base event -- every pipeline event inherits from this."""
 
     event_type: str = ""
     timestamp: float = field(default_factory=time.time)
@@ -84,7 +87,6 @@ class ToolCallEvent(PipelineEvent):
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
-        # Truncate large argument values for serialization
         args = d.get("arguments", {})
         for k, v in args.items():
             if isinstance(v, str) and len(v) > 500:
@@ -104,7 +106,6 @@ class ToolResultEvent(PipelineEvent):
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
-        # Truncate large output
         if isinstance(d.get("output"), str) and len(d["output"]) > 1000:
             d["output"] = d["output"][:1000] + "..."
         return d
@@ -161,3 +162,68 @@ class ErrorEvent(PipelineEvent):
 
     event_type: str = field(default="error", init=False)
     message: str = ""
+
+
+# ══════════════════════════════════════════════════════════════════
+# NEW: Orchestrator task lifecycle events
+# ══════════════════════════════════════════════════════════════════
+
+
+@dataclass(frozen=True)
+class TaskDispatchedEvent(PipelineEvent):
+    """A task has been dispatched to a worker."""
+
+    event_type: str = field(default="task_dispatched", init=False)
+    task_id: str = ""
+    identifier: str = ""
+    title: str = ""
+
+
+@dataclass(frozen=True)
+class TaskCompletedEvent(PipelineEvent):
+    """A task's pipeline run has completed."""
+
+    event_type: str = field(default="task_completed", init=False)
+    task_id: str = ""
+    identifier: str = ""
+    stats: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class TaskRetryingEvent(PipelineEvent):
+    """A task is being scheduled for retry after failure."""
+
+    event_type: str = field(default="task_retrying", init=False)
+    task_id: str = ""
+    identifier: str = ""
+    attempt: int = 0
+    delay_ms: int = 0
+    error: str = ""
+
+
+@dataclass(frozen=True)
+class TaskStalledEvent(PipelineEvent):
+    """A running task has been detected as stalled."""
+
+    event_type: str = field(default="task_stalled", init=False)
+    task_id: str = ""
+    identifier: str = ""
+    elapsed_ms: int = 0
+
+
+@dataclass(frozen=True)
+class OrchestratorTickEvent(PipelineEvent):
+    """Emitted at each orchestrator poll tick."""
+
+    event_type: str = field(default="orchestrator_tick", init=False)
+    running_count: int = 0
+    retry_count: int = 0
+    available_slots: int = 0
+
+
+@dataclass(frozen=True)
+class DashboardSnapshotEvent(PipelineEvent):
+    """Carries a serialised orchestrator state snapshot for dashboards."""
+
+    event_type: str = field(default="dashboard_snapshot", init=False)
+    snapshot: dict[str, Any] = field(default_factory=dict)

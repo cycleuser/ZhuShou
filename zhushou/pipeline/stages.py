@@ -1,34 +1,45 @@
-"""Pipeline stage definitions with system prompts for each phase.
+"""Pipeline stage definitions with overridable system prompts.
 
-Evolved from the original XML-based stage prompts.  Tool instructions are
-no longer embedded in each prompt because the agent loop handles
-function-calling natively via the LLM's tool-use API.
+Each stage has a default system prompt baked in.  The ``StageRegistry``
+allows WORKFLOW.md to override individual prompts at runtime, supporting
+hot-reload without code changes.
 
-Development standards from the unified project specification are embedded
-directly into each stage prompt so that even small models produce
-well-structured, complete output.
+Stage prompts are Jinja2 templates that can reference ``{{ task.title }}``,
+``{{ task.identifier }}``, etc. when rendered by the prompt builder.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass
 class Stage:
     """A single pipeline stage definition."""
 
+    key: str
     name: str
     system_prompt: str
     temperature: float = 0.3
 
 
-# ── Stage 1: Requirements Analysis ────────────────────────────────────
+# ── Default prompts (built-in) ────────────────────────────────────────
 
-STAGE_REQUIREMENTS = Stage(
+_DEFAULT_PROMPTS: dict[str, tuple[str, str, float]] = {}  # key -> (name, prompt, temp)
+
+
+def _register_default(key: str, name: str, temperature: float, prompt: str) -> Stage:
+    """Register a default stage prompt and return the Stage."""
+    _DEFAULT_PROMPTS[key] = (name, prompt, temperature)
+    return Stage(key=key, name=name, system_prompt=prompt, temperature=temperature)
+
+
+STAGE_REQUIREMENTS = _register_default(
+    key="requirements",
     name="Requirements Analysis",
     temperature=0.3,
-    system_prompt=(
+    prompt=(
         "You are a Requirements Analyst.  Your job is to analyse the user's "
         "project request and produce a clear, structured requirements document.\n\n"
 
@@ -60,12 +71,11 @@ STAGE_REQUIREMENTS = Stage(
 )
 
 
-# ── Stage 2: Architecture Design ──────────────────────────────────────
-
-STAGE_ARCHITECTURE = Stage(
+STAGE_ARCHITECTURE = _register_default(
+    key="architecture",
     name="Architecture Design",
     temperature=0.4,
-    system_prompt=(
+    prompt=(
         "You are a Software Architect.  Your job is to design the system "
         "architecture based on the requirements provided.\n\n"
 
@@ -123,12 +133,11 @@ STAGE_ARCHITECTURE = Stage(
 )
 
 
-# ── Stage 3: Task Breakdown ───────────────────────────────────────────
-
-STAGE_TASKS = Stage(
+STAGE_TASKS = _register_default(
+    key="tasks",
     name="Task Breakdown",
     temperature=0.3,
-    system_prompt=(
+    prompt=(
         "You are a Project Planner.  Your job is to break the architecture "
         "into concrete, ordered implementation tasks.\n\n"
 
@@ -180,12 +189,11 @@ STAGE_TASKS = Stage(
 )
 
 
-# ── Stage 3.5: Function-Level Design ─────────────────────────────────
-
-STAGE_FUNCTION_DESIGN = Stage(
+STAGE_FUNCTION_DESIGN = _register_default(
+    key="function_design",
     name="Function Design",
     temperature=0.3,
-    system_prompt=(
+    prompt=(
         "You are a Software Designer.  Your job is to produce a detailed "
         "function-level design document that lists EVERY function and class "
         "that will be implemented.\n\n"
@@ -222,12 +230,11 @@ STAGE_FUNCTION_DESIGN = Stage(
 )
 
 
-# ── Stage 4: Implementation ───────────────────────────────────────────
-
-STAGE_IMPLEMENTATION = Stage(
+STAGE_IMPLEMENTATION = _register_default(
+    key="implementation",
     name="Implementation",
     temperature=0.2,
-    system_prompt=(
+    prompt=(
         "You are a Software Developer.  Your job is to implement ALL source "
         "code files for the project.\n\n"
 
@@ -312,12 +319,11 @@ STAGE_IMPLEMENTATION = Stage(
 )
 
 
-# ── Stage 5: Testing ──────────────────────────────────────────────────
-
-STAGE_TESTING = Stage(
+STAGE_TESTING = _register_default(
+    key="testing",
     name="Testing",
     temperature=0.3,
-    system_prompt=(
+    prompt=(
         "You are a QA Engineer.  Your job is to write tests and run them to "
         "validate the implementation.\n\n"
 
@@ -333,42 +339,14 @@ STAGE_TESTING = Stage(
         "Create tests/test_unified_api.py with these 6 test classes:\n\n"
 
         "1. class TestToolResult (4 tests):\n"
-        "   - test_success_result: ToolResult(success=True, data=...) "
-        "works correctly\n"
-        "   - test_failure_result: ToolResult(success=False, error=...) "
-        "has error set\n"
-        "   - test_to_dict: to_dict() returns dict with 4 keys "
-        "(success, data, error, metadata)\n"
-        "   - test_default_metadata_is_independent: two instances don't "
-        "share metadata dict\n\n"
+        "   - test_success_result, test_failure_result, test_to_dict, "
+        "test_default_metadata_is_independent\n\n"
 
-        "2. class TestXxxAPI (3+ tests per API function):\n"
-        "   - test with invalid input -> success is False\n"
-        "   - test with valid input -> success is True\n"
-        "   - test return type is ToolResult\n\n"
-
-        "3. class TestToolsSchema (4 tests):\n"
-        "   - test_tools_is_list: TOOLS is a non-empty list\n"
-        "   - test_tool_names: each name starts with 'packagename_'\n"
-        "   - test_tool_structure: each has type='function' + "
-        "function.name/description/parameters\n"
-        "   - test_required_fields_exist_in_properties: required list "
-        "matches properties keys\n\n"
-
-        "4. class TestToolsDispatch (3+ tests):\n"
-        "   - test_dispatch_unknown_tool: raises ValueError\n"
-        "   - test_dispatch_json_string_args: JSON string args work\n"
-        "   - test_dispatch_dict_args: dict args work\n\n"
-
-        "5. class TestCLIFlags (2-5 tests):\n"
-        "   - test_version_flag: subprocess run -V returns version\n"
-        "   - test_help_has_standard_flags: --help output contains "
-        "--json, --quiet, --verbose\n\n"
-
-        "6. class TestPackageExports (3+ tests):\n"
-        "   - test_version_exported: package has __version__\n"
-        "   - test_toolresult_exported: from package import ToolResult\n"
-        "   - test_api_functions_exported: all API functions importable\n\n"
+        "2. class TestXxxAPI (3+ tests per API function)\n\n"
+        "3. class TestToolsSchema (4 tests)\n\n"
+        "4. class TestToolsDispatch (3+ tests)\n\n"
+        "5. class TestCLIFlags (2-5 tests)\n\n"
+        "6. class TestPackageExports (3+ tests)\n\n"
 
         "Also create tests/__init__.py (empty file).\n\n"
 
@@ -377,19 +355,17 @@ STAGE_TESTING = Stage(
         "- Use tempfile.TemporaryDirectory() for file system tests\n"
         "- Test edge cases (empty inputs, boundary conditions)\n"
         "- Make tests independent and self-contained\n"
-        "- If testing a game or interactive program, test the LOGIC not "
-        "the UI\n"
+        "- If testing a game or interactive program, test the LOGIC not the UI\n"
         "- If you need sys.path manipulation, do so in conftest.py"
     ),
 )
 
 
-# ── Stage 6: Debugging ────────────────────────────────────────────────
-
-STAGE_DEBUGGING = Stage(
+STAGE_DEBUGGING = _register_default(
+    key="debugging",
     name="Debugging",
     temperature=0.4,
-    system_prompt=(
+    prompt=(
         "You are a Debugging Expert.  Tests have failed and you need to fix "
         "the bugs.\n\n"
         "You will be given the test failure output.  Your job is to:\n"
@@ -408,202 +384,160 @@ STAGE_DEBUGGING = Stage(
 
         "IMPORTANT:\n"
         "- Fix the ROOT CAUSE, not just the symptoms\n"
-        "- If a function is a STUB (contains only 'pass', '# Implementation'"
-        ", or '# TODO'), you MUST rewrite it with REAL implementation logic\n"
+        "- If a function is a STUB, you MUST rewrite it with REAL logic\n"
         "- Don't break other tests while fixing one\n"
-        "- If a test itself is wrong (testing incorrect behaviour), fix "
-        "the test\n"
+        "- If a test itself is wrong, fix the test\n"
         "- Make minimal changes — don't rewrite entire files unless necessary\n"
         "- After your fixes, always run the tests again"
     ),
 )
 
 
-# ── Stage 7: Verification ────────────────────────────────────────────
-
-STAGE_VERIFICATION = Stage(
+STAGE_VERIFICATION = _register_default(
+    key="verification",
     name="Verification",
     temperature=0.3,
-    system_prompt=(
+    prompt=(
         "You are a Project Verifier.  Your job is to do a final check on the "
         "completed project.\n\n"
 
         "You MUST perform ALL of these checks:\n\n"
-
-        "1. Use the list_files tool to inventory all created files\n\n"
-
-        "2. SYNTAX CHECK — for each .py file, run:\n"
-        "   python -m py_compile <file>\n"
-        "   Fix any syntax errors before proceeding.\n\n"
-
-        "3. IMPORT CHECKS — run these commands:\n"
-        "   python -c 'from <package>.api import ToolResult'\n"
-        "   python -c 'from <package>.tools import TOOLS, dispatch'\n"
-        "   python -c 'from <package> import __version__'\n"
-        "   If any fail, fix the imports.\n\n"
-
-        "4. CLI CHECKS (if project has CLI):\n"
-        "   python -m <package> -V  (should print version)\n"
-        "   python -m <package> --help  (should show -V, -v, --json, -q, "
-        "-o flags)\n\n"
-
-        "5. Run the full test suite:\n"
-        "   python -m pytest tests/ -v\n\n"
-
-        "6. If there is a main entry point, try running it briefly\n\n"
-
-        "7. Generate a final project report — use the write_file tool to "
-        "create docs/report.md containing:\n"
-        "   - Project summary\n"
-        "   - Complete file list with line counts and descriptions\n"
-        "   - Test results (pass/fail counts)\n"
-        "   - How to install: pip install -e .\n"
-        "   - How to run: python -m <package> (with example commands)\n"
-        "   - Known limitations or issues\n\n"
-
-        "This is the final stage.  Make the report useful for someone who "
-        "wants to use this project."
+        "1. Use the list_files tool to inventory all created files\n"
+        "2. SYNTAX CHECK — for each .py file, run: python -m py_compile <file>\n"
+        "3. IMPORT CHECKS — verify ToolResult, TOOLS, dispatch, __version__\n"
+        "4. CLI CHECKS (if project has CLI): -V and --help\n"
+        "5. Run the full test suite: python -m pytest tests/ -v\n"
+        "6. If there is a main entry point, try running it briefly\n"
+        "7. Generate a final project report to docs/report.md"
     ),
 )
 
 
-# ── Stage 8: Documentation (--full mode only) ────────────────────────
-
-STAGE_DOCUMENTATION = Stage(
+STAGE_DOCUMENTATION = _register_default(
+    key="documentation",
     name="Documentation",
     temperature=0.3,
-    system_prompt=(
+    prompt=(
         "You are a Technical Writer.  Your job is to generate comprehensive "
         "documentation for the completed project.\n\n"
 
-        "You MUST create these files using the write_file tool:\n\n"
-
-        "═══ 1. README.md (English) ═══\n\n"
-        "Use this exact section structure:\n"
-        "  # ProjectName — one-sentence description\n"
-        "  ## Features\n"
-        "  ## Requirements\n"
-        "  ## Installation\n"
-        "    - From PyPI: pip install projectname\n"
-        "    - From source: git clone ... && pip install -e .\n"
-        "  ## Quick Start\n"
-        "    - 3-5 example commands showing the most common use cases\n"
-        "  ## Usage\n"
-        "    - Global options table (Flag | Short | Description)\n"
-        "    - Subcommands (if any)\n"
-        "  ## Python API\n"
-        "    - Code example showing: from package import func; "
-        "result = func(...); print(result.success, result.data)\n"
-        "  ## Agent Integration (OpenAI Function Calling)\n"
-        "    - Code example showing: from package.tools import TOOLS, "
-        "dispatch; result = dispatch(name, args)\n"
-        "  ## CLI Help\n"
-        "    - Embed: ![CLI Help](images/projectname_help.png)\n"
-        "  ## Development\n"
-        "    - pip install -e '.[dev]' && pytest\n"
-        "  ## License\n\n"
-
-        "═══ 2. README_CN.md (Chinese) ═══\n\n"
-        "Translate README.md into Chinese.  Keep the same section structure.  "
-        "Code examples stay identical.  Only translate headings and "
-        "descriptive text.\n\n"
-
-        "═══ 3. requirements.txt ═══\n\n"
-        "List all third-party dependencies, one per line.  Do NOT include "
-        "standard library modules.  Include version constraints if known "
-        "(e.g., httpx>=0.24)."
+        "Create README.md (English), README_CN.md (Chinese), and "
+        "requirements.txt using the write_file tool."
     ),
 )
 
 
-# ── Stage 9: Packaging (--full mode only) ─────────────────────────────
-
-STAGE_PACKAGING = Stage(
+STAGE_PACKAGING = _register_default(
+    key="packaging",
     name="Packaging",
     temperature=0.2,
-    system_prompt=(
+    prompt=(
         "You are a Build Engineer.  Your job is to generate packaging and "
         "distribution files for the completed project.\n\n"
 
-        "You MUST create these files using the write_file tool:\n\n"
-
-        "═══ 1. pyproject.toml ═══\n\n"
-        "[build-system]\n"
-        "requires = ['setuptools>=68.0', 'wheel']\n"
-        "build-backend = 'setuptools.backends._legacy:_Backend'\n\n"
-        "[project]\n"
-        "name = 'projectname'\n"
-        "dynamic = ['version']\n"
-        "description = 'One-line description'\n"
-        "readme = 'README.md'\n"
-        "license = {text = 'MIT'}\n"
-        "requires-python = '>=3.9'\n"
-        "authors = [{name = 'Author'}]\n"
-        "keywords = [...]\n"
-        "classifiers = [...]\n"
-        "dependencies = [list from requirements.txt]\n\n"
-        "[project.scripts]\n"
-        "toolname = 'packagename.cli:main'\n\n"
-        "[project.optional-dependencies]\n"
-        "dev = ['pytest', 'build', 'twine']\n"
-        "gui = ['PySide6']  # if GUI exists\n\n"
-        "[tool.setuptools.dynamic]\n"
-        "version = {attr = 'packagename.__version__'}\n\n"
-        "[tool.setuptools.packages.find]\n"
-        "include = ['packagename*']\n\n"
-        "[tool.pytest.ini_options]\n"
-        "testpaths = ['tests']\n\n"
-
-        "═══ 2. upload_pypi.sh ═══\n\n"
-        "A bash script that:\n"
-        "  - Removes old dist/ and build/ directories\n"
-        "  - Runs: python3 -m build\n"
-        "  - Runs: twine check dist/*\n"
-        "  - Accepts an argument: 'test' for TestPyPI, no arg for "
-        "production PyPI\n"
-        "  - test mode: twine upload --repository testpypi dist/*\n"
-        "  - prod mode: twine upload dist/*\n"
-        "  - Must be executable (include #!/bin/bash)\n\n"
-
-        "═══ 3. upload_pypi.bat ═══\n\n"
-        "Windows batch equivalent of upload_pypi.sh with the same logic.\n\n"
-
-        "═══ 4. scripts/generate_help_screenshots.py ═══\n\n"
-        "A Python script that:\n"
-        "  - Runs 'python -m packagename --help' and captures the output\n"
-        "  - Creates images/ directory\n"
-        "  - Saves output as images/toolname_help.txt\n"
-        "  - Optionally renders to images/toolname_help.png using Pillow "
-        "(PIL) with dark background (30,30,30) and light text (204,204,204) "
-        "using a monospace font\n"
-        "  - Handles Pillow not being installed gracefully (just skip PNG)\n"
-        "  - Uses COLUMNS=80 environment variable for consistent width"
+        "Create pyproject.toml, upload_pypi.sh, upload_pypi.bat, "
+        "and scripts/generate_help_screenshots.py using the write_file tool."
     ),
 )
 
 
-# ── Stage lists ───────────────────────────────────────────────────────
+# ── Stage lists (default ordering) ────────────────────────────────────
 
 ALL_STAGES: list[Stage] = [
-    STAGE_REQUIREMENTS,       # 0
-    STAGE_ARCHITECTURE,       # 1
-    STAGE_TASKS,              # 2
-    STAGE_FUNCTION_DESIGN,    # 3 (new)
-    STAGE_IMPLEMENTATION,     # 4 (was 3)
-    STAGE_TESTING,            # 5 (was 4)
-    STAGE_DEBUGGING,          # 6 (was 5) — handled specially (debug loop)
-    STAGE_VERIFICATION,       # 7 (was 6)
+    STAGE_REQUIREMENTS,
+    STAGE_ARCHITECTURE,
+    STAGE_TASKS,
+    STAGE_FUNCTION_DESIGN,
+    STAGE_IMPLEMENTATION,
+    STAGE_TESTING,
+    STAGE_DEBUGGING,
+    STAGE_VERIFICATION,
 ]
 
 FULL_STAGES: list[Stage] = [
     *ALL_STAGES,
-    STAGE_DOCUMENTATION,      # 8 (was 7)
-    STAGE_PACKAGING,          # 9 (was 8)
+    STAGE_DOCUMENTATION,
+    STAGE_PACKAGING,
 ]
 
+# Lookup by key
+_STAGE_BY_KEY: dict[str, Stage] = {s.key: s for s in FULL_STAGES}
 
-def build_user_prompt(stage_index: int, user_request: str, context: dict[str, str]) -> str:
-    """Build the user prompt for a given stage, incorporating context from prior stages.
+
+# ── Stage Registry (workflow-overridable) ─────────────────────────────
+
+
+class StageRegistry:
+    """Resolves stage definitions, merging defaults with workflow overrides.
+
+    When a WORKFLOW.md provides custom prompts for specific stage keys,
+    the registry uses those overrides.  Missing keys fall back to the
+    built-in defaults defined above.
+    """
+
+    def __init__(
+        self,
+        overrides: dict[str, str] | None = None,
+        enabled_keys: list[str] | None = None,
+    ) -> None:
+        self._overrides = overrides or {}
+        self._enabled_keys = enabled_keys
+
+    def get_stage(self, key: str) -> Stage:
+        """Return a ``Stage`` for *key*, applying overrides if present."""
+        default = _STAGE_BY_KEY.get(key)
+        if default is None:
+            raise KeyError(f"Unknown stage key: {key!r}")
+
+        override_prompt = self._overrides.get(key)
+        if override_prompt:
+            return Stage(
+                key=key,
+                name=default.name,
+                system_prompt=override_prompt,
+                temperature=default.temperature,
+            )
+        return default
+
+    def get_stages(self, full_mode: bool = False) -> list[Stage]:
+        """Return the ordered list of stages to execute.
+
+        If *enabled_keys* was supplied to the constructor, only those
+        stages are returned (in the specified order).  Otherwise the
+        default ``ALL_STAGES`` or ``FULL_STAGES`` list is used.
+        """
+        if self._enabled_keys is not None:
+            return [self.get_stage(k) for k in self._enabled_keys]
+        keys = [s.key for s in (FULL_STAGES if full_mode else ALL_STAGES)]
+        return [self.get_stage(k) for k in keys]
+
+    @classmethod
+    def from_workflow_config(cls, wf_config: Any) -> StageRegistry:
+        """Build a registry from a ``WorkflowConfig`` instance.
+
+        Reads ``enabled_stages`` and ``stage_prompt_override()`` from
+        the config.
+        """
+        enabled = getattr(wf_config, "enabled_stages", None)
+
+        overrides: dict[str, str] = {}
+        for key in _DEFAULT_PROMPTS:
+            override = wf_config.stage_prompt_override(key) if wf_config else None
+            if override:
+                overrides[key] = override
+
+        return cls(overrides=overrides, enabled_keys=enabled)
+
+
+# ── User prompt builder ───────────────────────────────────────────────
+
+
+def build_user_prompt(
+    stage_index: int,
+    user_request: str,
+    context: dict[str, str],
+) -> str:
+    """Build the user prompt for a given stage, incorporating context.
 
     Parameters
     ----------
@@ -623,11 +557,9 @@ def build_user_prompt(stage_index: int, user_request: str, context: dict[str, st
     kb_context = context.get("kb_context", "")
 
     if stage_index == 0:
-        # Requirements: just the user request
         return f"Project request:\n{user_request}"
 
     elif stage_index == 1:
-        # Architecture: user request + requirements
         return (
             f"Project request: {user_request}\n\n"
             f"## Requirements Document\n{req}\n\n"
@@ -636,56 +568,37 @@ def build_user_prompt(stage_index: int, user_request: str, context: dict[str, st
         )
 
     elif stage_index == 2:
-        # Task breakdown: requirements + architecture
         return (
             f"Project request: {user_request}\n\n"
             f"## Requirements\n{req}\n\n"
             f"## Architecture\n{arch}\n\n"
-            "Break this into ordered implementation tasks.  Include "
-            "tasks for every standard module (__init__.py, core.py, "
-            "api.py, cli.py, tools.py, __main__.py)."
+            "Break this into ordered implementation tasks."
         )
 
     elif stage_index == 3:
-        # Function design: tasks + architecture
         return (
             f"Project request: {user_request}\n\n"
             f"## Architecture\n{arch}\n\n"
             f"## Implementation Tasks\n{tasks}\n\n"
-            "Read the architecture and tasks above.  List EVERY function "
-            "and class with its signature, purpose, and dependencies.  "
-            "Write the result to docs/function_design.md."
+            "List EVERY function and class with its signature, purpose, "
+            "and dependencies.  Write to docs/function_design.md."
         )
 
     elif stage_index == 4:
-        # Implementation: requirements + architecture + tasks + function design
         prompt = (
             f"Project request: {user_request}\n\n"
             f"## Requirements\n{req}\n\n"
             f"## Architecture\n{arch}\n\n"
             f"## Implementation Tasks\n{tasks}\n\n"
             f"## Function Design\n{func_design}\n\n"
-            "The package scaffold has already been created by "
-            "scaffold_project in the previous stage.  The following "
-            "files already exist with boilerplate code:\n"
-            "  - __init__.py (with __version__ and ToolResult re-export)\n"
-            "  - __main__.py (complete — do NOT touch)\n"
-            "  - api.py (with ToolResult dataclass — add API functions)\n"
-            "  - cli.py (with 5 standard flags — add project args)\n"
-            "  - tools.py (with dispatch skeleton — add TOOLS entries)\n"
-            "  - tests/conftest.py (complete)\n\n"
-            "Read each scaffolded file with read_file first, then:\n"
-            "1. Create core.py from scratch\n"
-            "2. Edit api.py, cli.py, tools.py, __init__.py to add "
-            "project-specific code\n"
-            "3. No stubs, no pass, no TODO — write REAL code."
+            "Implement all files.  Read scaffolded files first, then "
+            "create core.py from scratch and edit the rest."
         )
         if kb_context:
             prompt += f"\n\n## Reference Documentation\n{kb_context}"
         return prompt
 
     elif stage_index == 5:
-        # Testing: all prior context + summary of implemented files
         return (
             f"Project request: {user_request}\n\n"
             f"## Architecture\n{arch}\n\n"
@@ -694,51 +607,38 @@ def build_user_prompt(stage_index: int, user_request: str, context: dict[str, st
         )
 
     elif stage_index == 6:
-        # Debugging: include test failure output
         return (
             "The tests produced the following output:\n\n"
             f"```\n{test_output}\n```\n\n"
             f"## Architecture (for reference)\n{arch}\n\n"
-            "Analyse the failures, fix the bugs, and re-run the tests.  "
-            "If any function is a stub (pass / # Implementation), rewrite "
-            "it with real logic."
+            "Analyse the failures, fix the bugs, and re-run the tests."
         )
 
     elif stage_index == 7:
-        # Verification: summary
         return (
             f"Project request: {user_request}\n\n"
             "The project has been implemented and tested.  Do a final "
-            "verification:\n"
-            "1. List all files\n"
-            "2. Syntax-check each .py file with py_compile\n"
-            "3. Verify imports: ToolResult, TOOLS, dispatch, __version__\n"
-            "4. Verify CLI: -V and --help\n"
-            "5. Run tests\n"
-            "6. Try running the program\n"
-            "7. Write a final report to docs/report.md"
+            "verification: list files, syntax-check, verify imports, "
+            "check CLI, run tests, write report."
         )
 
     elif stage_index == 8:
-        # Documentation (--full mode)
         return (
             f"Project request: {user_request}\n\n"
             f"## Requirements\n{req}\n\n"
             f"## Architecture\n{arch}\n\n"
             f"## Implementation Summary\n{impl_summary}\n\n"
-            "Generate README.md (English), README_CN.md (Chinese), and "
-            "requirements.txt for this project."
+            "Generate README.md, README_CN.md, and requirements.txt."
         )
 
     elif stage_index == 9:
-        # Packaging (--full mode)
         return (
             f"Project request: {user_request}\n\n"
             f"## Requirements\n{req}\n\n"
             f"## Architecture\n{arch}\n\n"
             f"## Implementation Summary\n{impl_summary}\n\n"
             "Generate pyproject.toml, upload_pypi.sh, upload_pypi.bat, "
-            "and scripts/generate_help_screenshots.py for this project."
+            "and scripts/generate_help_screenshots.py."
         )
 
     return user_request
