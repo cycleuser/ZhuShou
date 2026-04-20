@@ -207,3 +207,8 @@ marimo/_lsp/
 __marimo__/
 /old/test_gomoku
 /output
+.DS_Store
+Article.md
+Article_CN.md
+*.mmd
+/pdf
